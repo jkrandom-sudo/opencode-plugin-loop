@@ -1,0 +1,68 @@
+{
+  "name": "opencode-plugin-loop",
+  "version": "0.2.0",
+  "description": "/loop command for opencode — run prompts on a schedule (fixed, adaptive, or maintenance), modeled after Claude Code's /loop",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./commands/loop.md": "./commands/loop.md",
+    "./commands/*": "./commands/*"
+  },
+  "files": [
+    "dist",
+    "commands",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "claude-code",
+    "loop",
+    "scheduled-tasks",
+    "cron",
+    "ai-coding-agent"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "opencode-plugin-loop authors"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jkrandom-sudo/opencode-plugin-loop.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jkrandom-sudo/opencode-plugin-loop/issues"
+  },
+  "homepage": "https://github.com/jkrandom-sudo/opencode-plugin-loop#readme",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
+    "test": "node --test tests/*.test.mjs",
+    "dry-run": "npm publish --dry-run",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "*"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "latest",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.4.0"
+  },
+  "opencode": {
+    "plugin": true,
+    "commands": [
+      "commands/loop.md"
+    ]
+  }
+}
