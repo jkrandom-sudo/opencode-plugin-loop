@@ -1,5 +1,9 @@
 # opencode-plugin-loop
 
+[![npm version](https://img.shields.io/npm/v/opencode-plugin-loop.svg)](https://www.npmjs.com/package/opencode-plugin-loop)
+[![npm downloads](https://img.shields.io/npm/dm/opencode-plugin-loop.svg)](https://www.npmjs.com/package/opencode-plugin-loop)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/jkrandom-sudo/opencode-plugin-loop/blob/main/LICENSE)
+
 A drop-in `/loop` command for [opencode](https://opencode.ai), modeled after Claude Code's `/loop`. Each `/loop` task is bound to the session that created it — never leaks to other sessions.
 
 ## Features
@@ -20,7 +24,17 @@ A drop-in `/loop` command for [opencode](https://opencode.ai), modeled after Cla
 
 ## Install
 
-Add to your `opencode.json`:
+### Option 1: From npm (recommended)
+
+Pick one of the two paths below — they do the same thing.
+
+**a) One-shot via the opencode CLI** (auto-edits your `opencode.json`):
+
+```bash
+opencode plugin install opencode-plugin-loop
+```
+
+**b) Manual edit** — add to your `opencode.json`:
 
 ```json
 {
@@ -28,7 +42,43 @@ Add to your `opencode.json`:
 }
 ```
 
-The plugin auto-installs its bundled command at `~/.config/opencode/commands/loop.md`.
+Both paths register the plugin globally. The bundled `/loop` command is auto-installed at `~/.config/opencode/commands/loop.md`.
+
+To upgrade later:
+
+```bash
+npm update -g opencode-plugin-loop
+# or, if you used the CLI install
+opencode plugin install opencode-plugin-loop   # re-run to refresh
+```
+
+### Option 2: From a specific npm version
+
+```bash
+opencode plugin install opencode-plugin-loop@0.2.0
+# or, with explicit registry access
+npm install -g opencode-plugin-loop@0.2.0
+```
+
+### Option 3: From source (development)
+
+```bash
+git clone https://github.com/jkrandom-sudo/opencode-plugin-loop.git
+cd opencode-plugin-loop
+npm install
+npm run build
+npm link                                # exposes package globally as `opencode-plugin-loop`
+```
+
+Then in `opencode.json`:
+
+```json
+{
+  "plugin": ["opencode-plugin-loop"]
+}
+```
+
+Re-run `npm run build` after editing `src/`. Use `npm run deploy` (if defined) to sync to `~/.config/opencode/plugins/opencode-plugin-loop/`.
 
 ## Usage
 
