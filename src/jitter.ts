@@ -9,6 +9,9 @@
  *
  * Deterministic per (taskId, time bucket) so the same task always gets
  * the same offset within a bucket.
+ *
+ * Implementation note: factory pattern (no `this` reliance) so opencode's
+ * plugin loader can call us with or without `new`.
  */
 
 /** Simple deterministic hash → [0, 1) */
@@ -27,32 +30,22 @@ const MAX_SLOW_JITTER_MS = 30 * 60 * 1000 // 30 minutes (for ≥1h tasks)
  *  (the absolute jitter still dominates the bucket size). */
 const BUCKET_MS = 1_000
 
-export class Jitter {
-  /**
-   * @param _percent kept for backwards compat; ignored now (we follow Claude Code's rule)
-   */
-  constructor(_percent: number = 0.1) {
-    // No-op: kept for API stability. The actual jitter is computed per-interval.
-  }
+export interface JitterInstance {
+  compute(taskId: string, intervalMs: number, atMs?: number): number
+}
 
-  /**
-   * Compute a deterministic offset for a task.
-   * Returns a value in approximately (-maxMs, +maxMs):
-   *   - maxMs = intervalMs / 2     if intervalMs < HOUR_MS
-   *   - maxMs = MAX_SLOW_JITTER_MS if intervalMs >= HOUR_MS (capped at intervalMs / 2)
-   *
-   * Note: no artificial minimum — a 30s interval gets up to ±15s jitter,
-   * not the old ±60s floor which broke short-interval tasks.
-   */
-  compute(taskId: string, intervalMs: number, atMs: number = Date.now()): number {
-    const halfInterval = intervalMs / 2
-    const maxMs = intervalMs < HOUR_MS ? halfInterval : Math.min(MAX_SLOW_JITTER_MS, halfInterval)
-
-    // Time-bucket the seed for variety across cycles.
-    const bucket = Math.floor(atMs / Math.max(BUCKET_MS, intervalMs))
-    const seed = `${taskId}-${bucket}`
-    const r = hashToFloat(seed) // [0, 1)
-    const raw = (r * 2 - 1) * maxMs
-    return Math.round(raw)
+export function Jitter(this: unknown, _percent: number = 0.1): JitterInstance {
+  void this
+  // No-op: kept for API stability. The actual jitter is computed per-interval.
+  return {
+    compute(taskId, intervalMs, atMs: number = Date.now()) {
+      const halfInterval = intervalMs / 2
+      const maxMs = intervalMs < HOUR_MS ? halfInterval : Math.min(MAX_SLOW_JITTER_MS, halfInterval)
+      const bucket = Math.floor(atMs / Math.max(BUCKET_MS, intervalMs))
+      const seed = `${taskId}-${bucket}`
+      const r = hashToFloat(seed)
+      const raw = (r * 2 - 1) * maxMs
+      return Math.round(raw)
+    },
   }
 }

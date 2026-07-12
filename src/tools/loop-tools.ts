@@ -13,8 +13,8 @@
 
 import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool"
 import { z } from "zod"
-import type { LoopStore } from "../store.js"
-import type { Scheduler } from "../scheduler.js"
+import type { LoopStoreInstance as LoopStore } from "../store.js"
+import type { SchedulerInstance as Scheduler } from "../scheduler.js"
 
 export async function buildLoopTools(
   store: LoopStore,

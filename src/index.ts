@@ -46,16 +46,19 @@ export const LoopPlugin: Plugin = async (ctx) => {
   const config = { ...DEFAULT_CONFIG, ...(opts ?? {}) }
 
   const storageDir = config.storageDir || `${ctx.directory}/.opencode/cache/loop`
-  const store = new LoopStore({
+
+  // Use factory functions directly (not `new`) to avoid opencode's plugin
+  // loader eating the `new` keyword and breaking function constructors.
+  const store = LoopStore({
     storageDir,
     maxTasks: config.maxTasks,
     taskTtlMs: config.taskTtlDays * 86_400_000,
   })
   await store.load()
 
-  const cron = new CronParser()
-  const jitter = new Jitter()
-  const scheduler = new Scheduler({
+  const cron = CronParser()
+  const jitter = Jitter()
+  const scheduler = Scheduler({
     store,
     cron,
     jitter,
@@ -72,10 +75,6 @@ export const LoopPlugin: Plugin = async (ctx) => {
 
   // Internal ticker: every 15s, fire any due tasks whose sessionID matches the active session.
   // This replaces the old session.idle-event-driven firing and runs even when no user input.
-  //
-  // inflight Set guards against double-firing: if opencode hot-reloads the plugin without
-  // calling dispose, multiple tickers can run in parallel and re-fire the same task.
-  // Each tick grabs the task.id into inflight and only releases it after markFired completes.
   const inflight = new Set<string>()
   const ticker = setInterval(async () => {
     try {
@@ -83,9 +82,7 @@ export const LoopPlugin: Plugin = async (ctx) => {
       const due = await scheduler.getDueTasksForSession(activeSessionID)
       if (due.length === 0) return
       for (const task of due) {
-        // Belt + suspenders: even if activeSessionID changed mid-tick
         if (task.sessionID !== activeSessionID) continue
-        // Skip if another ticker (or this one) is already firing this task
         if (inflight.has(task.id)) continue
         inflight.add(task.id)
         try {
@@ -123,12 +120,10 @@ export const LoopPlugin: Plugin = async (ctx) => {
       }
     },
 
-    // Track the user's current session. Fires on every message the user sends.
     "chat.message": async (input) => {
       setActive(input.sessionID)
     },
 
-    // /loop command parsing + dispatcher
     "command.execute.before": async (input, _output) => {
       if (input.command !== "loop") return
       setActive(input.sessionID)
@@ -147,7 +142,10 @@ export const LoopPlugin: Plugin = async (ctx) => {
   return hooks
 }
 
+// Export both bare plugin function and {server: plugin} wrapper.
+// opencode's plugin loader is picky about which format it accepts.
 export default LoopPlugin
+export const plugin = { server: LoopPlugin }
 
 // ---- Public API exports (for users who want to compose) ----
 export { LoopStore } from "./store.js"
