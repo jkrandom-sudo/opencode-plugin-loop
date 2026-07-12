@@ -38,7 +38,7 @@ const DEFAULT_CONFIG: Required<LoopConfig> = {
   jitterPercent: 0.1,
   defaultAdaptiveMinMs: 60_000,
   defaultAdaptiveMaxMs: 3_600_000,
-  tickerIntervalMs: 15_000,
+  tickerIntervalMs: 5_000,
 }
 
 export const LoopPlugin: Plugin = async (ctx) => {
