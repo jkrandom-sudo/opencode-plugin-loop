@@ -40,24 +40,32 @@ The scheduling server plugin still has a native toast fallback, while supported 
 Use OpenCode's plugin installer so the package's server and TUI entrypoints are both detected and added to the correct configs:
 
 ```bash
-opencode plugin opencode-plugin-loop@0.2.6 --global --force
+opencode plugin opencode-plugin-loop --global --force
 ```
 
-This pins version 0.2.6 and updates both global `opencode.json` and `tui.json`.
+This adds the unversioned package name to both global `opencode.json` and `tui.json`, so future upgrades do not require editing a version number.
 
 If `/loop` is not already defined in your OpenCode configuration, add the command definition shown below to `opencode.json`. OpenCode detects both plugin entrypoints from the npm package, but it does not currently copy the bundled `commands/loop.md` file into your config directory.
 
-To upgrade after a newer version is released, replace `0.2.6` in the command with the target version and run it again with `--force`.
+### Upgrade
+
+To update an existing installation to the current npm release, rerun the same command:
+
+```bash
+opencode plugin opencode-plugin-loop --global --force
+```
+
+The `--force` flag replaces the installed plugin version and refreshes both global config entries without requiring a version-number change. Restart OpenCode after the command completes.
 
 ### Option 2: Manual configuration
 
-Add the same pinned package to the `plugin` array in both configuration files.
+Add the same package name to the `plugin` array in both configuration files.
 
 Server config (`~/.config/opencode/opencode.json`):
 
 ```json
 {
-  "plugin": ["opencode-plugin-loop@0.2.6"],
+  "plugin": ["opencode-plugin-loop"],
   "command": {
     "loop": {
       "description": "定时重复执行 prompt。可选间隔: s/m/h/d。子命令: list | status | cancel <id> | pause <id> | resume <id> | stop-all（加 --all 跨 session）",
@@ -73,7 +81,7 @@ TUI config (`~/.config/opencode/tui.json`):
 ```json
 {
   "$schema": "https://opencode.ai/tui.json",
-  "plugin": ["opencode-plugin-loop@0.2.6"]
+  "plugin": ["opencode-plugin-loop"]
 }
 ```
 
