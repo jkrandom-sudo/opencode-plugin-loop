@@ -347,6 +347,7 @@ test("TUI-safe /loop list uses toast and consumes the model-facing command", asy
     assert.equal(consoleCalls.length, 0)
     assert.equal(toastCalls.length, 1)
     assert.equal(toastCalls[0].throwOnError, true)
+    assert.equal(toastCalls[0].body.title, "Loop · opencode-plugin-loop")
     assert.equal(toastCalls[0].body.variant, "info")
     assert.match(toastCalls[0].body.message, /loop task/i)
     assert.doesNotMatch(output.parts[0].text, /^list$/)

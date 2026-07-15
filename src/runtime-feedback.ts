@@ -1,6 +1,7 @@
 import type { PluginInput } from "@opencode-ai/plugin"
 import type { Part } from "@opencode-ai/sdk"
 import type { CommandParseResult } from "./scheduler.js"
+import { LOOP_FEEDBACK_TITLE } from "./tui-feedback-model.js"
 
 const SERVICE = "opencode-plugin-loop"
 const HANDLED_COMMAND_PROMPT =
@@ -71,7 +72,7 @@ export async function showLoopResult(
     await client.tui.showToast({
       throwOnError: true,
       body: {
-        title: "Loop",
+        title: LOOP_FEEDBACK_TITLE,
         message: result.message,
         variant: toastVariant(result.message),
         duration: toastDuration(result.message),
