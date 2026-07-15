@@ -16,11 +16,13 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { join, dirname } from "node:path"
 import type { LoopTask, CreateTaskInput } from "./types.js"
+import { errorMessage, type LoopLogger } from "./runtime-feedback.js"
 
 export interface LoopStoreOptions {
   storageDir: string
   maxTasks?: number
   taskTtlMs?: number
+  logger?: LoopLogger
 }
 
 interface PersistedState {
@@ -63,6 +65,7 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
   // IMPORTANT: do not access `this` here — opencode may call us without `new`,
   // in which case `this` is undefined in strict mode.
   void this
+  let logger: LoopLogger = async () => {}
   const inst: LoopStoreInstance = {
     state: { version: 1, tasks: [] },
     filePath: "",
@@ -85,7 +88,9 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
         if (inst.state.tasks.length !== parsed.tasks.length) {
           await inst.persist()
           const dropped = parsed.tasks.length - inst.state.tasks.length
-          console.log(`[opencode-plugin-loop] cleaned ${dropped} task(s) on load (orphan/expired)`)
+          await logger("info", `cleaned ${dropped} task(s) on load (orphan/expired)`, {
+            count: dropped,
+          })
         }
       } catch (err) {
         const backup = `${inst.filePath}.corrupted.${Date.now()}`
@@ -95,7 +100,10 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
           // ignore
         }
         inst.state = { version: 1, tasks: [] }
-        console.warn(`[opencode-plugin-loop] tasks.json was corrupted; archived to ${backup}. Error: ${err}`)
+        await logger("warn", "tasks.json was corrupted and archived", {
+          backup,
+          error: errorMessage(err),
+        })
       }
     },
     persist: async () => {
@@ -227,12 +235,16 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
         const existing = existsSync(logFile) ? readFileSync(logFile, "utf-8") : ""
         writeFileSync(logFile, existing + line + "\n", "utf-8")
       } catch (err) {
-        console.warn(`[opencode-plugin-loop] failed to log fire: ${err}`)
+        await logger("warn", "failed to write fire history", {
+          error: errorMessage(err),
+          taskId: task.id,
+        })
       }
     },
   }
 
   if (options) {
+    logger = options.logger ?? logger
     inst.filePath = join(options.storageDir, "tasks.json")
     inst.maxTasks = options.maxTasks ?? 50
     inst.taskTtlMs = options.taskTtlMs ?? 7 * 24 * 60 * 60 * 1000

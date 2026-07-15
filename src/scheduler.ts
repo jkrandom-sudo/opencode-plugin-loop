@@ -16,6 +16,7 @@ import type { LoopTask } from "./types.js"
 import type { LoopStoreInstance as LoopStore } from "./store.js"
 import type { CronParserInstance as CronParser } from "./cron-parser.js"
 import type { JitterInstance as Jitter } from "./jitter.js"
+import { errorMessage, type LoopLogger } from "./runtime-feedback.js"
 
 export interface SchedulerOptions {
   store: LoopStore
@@ -23,6 +24,7 @@ export interface SchedulerOptions {
   jitter: Jitter
   adaptiveMinMs: number
   adaptiveMaxMs: number
+  logger?: LoopLogger
 }
 
 export interface CommandParseResult {
@@ -53,6 +55,7 @@ export type { SchedulerInstance }
 
 export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInstance {
   void this
+  const logger: LoopLogger = opts.logger ?? (async () => {})
   const inst: SchedulerInstance = {
     opts,
     currentSessionID: null,
@@ -268,12 +271,12 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
         const client = ctx?.client
 
         if (!sessionID) {
-          console.warn(`[opencode-plugin-loop] task ${task.id} has no sessionID; skipping`)
+          await logger("warn", "task has no sessionID; skipping", { taskId: task.id })
           await inst.opts.store.logFire(task, false)
           return
         }
         if (!client?.session?.prompt) {
-          console.warn(`[opencode-plugin-loop] client.session.prompt not available`)
+          await logger("warn", "client.session.prompt not available", { taskId: task.id })
           await inst.opts.store.logFire(task, false)
           return
         }
@@ -295,7 +298,10 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
           await inst.opts.store.logFire(task, true)
         } catch (err) {
           await inst.opts.store.logFire(task, false)
-          console.warn(`[opencode-plugin-loop] failed to fire task ${task.id}:`, err)
+          await logger("error", "failed to fire task", {
+            taskId: task.id,
+            error: errorMessage(err),
+          })
         }
       } finally {
         inst.inflight.delete(task.id)

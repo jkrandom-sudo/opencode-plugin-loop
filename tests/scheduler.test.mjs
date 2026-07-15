@@ -8,7 +8,7 @@ import { Scheduler } from "../dist/scheduler.js"
 import { CronParser } from "../dist/cron-parser.js"
 import { Jitter } from "../dist/jitter.js"
 
-function makeScheduler() {
+function makeScheduler(logger) {
   const dir = mkdtempSync(join(tmpdir(), "loop-sched-"))
   const store = new LoopStore({ storageDir: dir })
   const sched = new Scheduler({
@@ -17,6 +17,7 @@ function makeScheduler() {
     jitter: new Jitter(0.1),
     adaptiveMinMs: 60_000,
     adaptiveMaxMs: 3_600_000,
+    logger,
   })
   return { sched, store, dir }
 }
@@ -234,6 +235,44 @@ test("/loop resume --all works cross-session and rearms fixed", async () => {
     assert.match(r.message, /Resumed/)
     assert.equal(store.get(b.task.id).paused, false)
   } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("fireTask failure uses structured logger without console output", async () => {
+  const logCalls = []
+  const consoleCalls = []
+  const originalLog = console.log
+  const originalWarn = console.warn
+  const originalError = console.error
+  console.log = (...args) => consoleCalls.push(["log", ...args])
+  console.warn = (...args) => consoleCalls.push(["warn", ...args])
+  console.error = (...args) => consoleCalls.push(["error", ...args])
+  const { sched, dir } = makeScheduler(async (level, message, extra) => {
+    logCalls.push({ level, message, extra })
+  })
+  try {
+    const result = await sched.handleUserCommand("5m fail", dir, "s1")
+    const client = {
+      session: {
+        async prompt() {
+          throw new Error("prompt failed")
+        },
+      },
+    }
+
+    await sched.fireTask(result.task, { client, directory: dir })
+
+    assert.equal(consoleCalls.length, 0)
+    assert.equal(logCalls.length, 1)
+    assert.equal(logCalls[0].level, "error")
+    assert.match(logCalls[0].message, /failed to fire task/i)
+    assert.equal(logCalls[0].extra.taskId, result.task.id)
+    assert.equal(logCalls[0].extra.error, "prompt failed")
+  } finally {
+    console.log = originalLog
+    console.warn = originalWarn
+    console.error = originalError
     rmSync(dir, { recursive: true })
   }
 })

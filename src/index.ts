@@ -60,6 +60,7 @@ export const LoopPlugin: Plugin = async (ctx) => {
     storageDir,
     maxTasks: config.maxTasks,
     taskTtlMs: config.taskTtlDays * 86_400_000,
+    logger,
   })
   await store.load()
 
@@ -71,6 +72,7 @@ export const LoopPlugin: Plugin = async (ctx) => {
     jitter,
     adaptiveMinMs: config.defaultAdaptiveMinMs,
     adaptiveMaxMs: config.defaultAdaptiveMaxMs,
+    logger,
   })
 
   // Track which session the user is currently in.

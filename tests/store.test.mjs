@@ -319,3 +319,101 @@ test("markFired respects explicit nextDueAt", async () => {
     rmSync(dir, { recursive: true })
   }
 })
+
+test("structured logger records task cleanup without console output", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-test-"))
+  const consoleCalls = []
+  const originalLog = console.log
+  const originalWarn = console.warn
+  const originalError = console.error
+  console.log = (...args) => consoleCalls.push(["log", ...args])
+  console.warn = (...args) => consoleCalls.push(["warn", ...args])
+  console.error = (...args) => consoleCalls.push(["error", ...args])
+  try {
+    const now = Date.now()
+    writeFileSync(
+      join(dir, "tasks.json"),
+      JSON.stringify({
+        version: 1,
+        tasks: [
+          {
+            id: "orphan",
+            prompt: "legacy",
+            mode: "fixed",
+            intervalMs: 60_000,
+            createdAt: now,
+            lastFiredAt: 0,
+            nextDueAt: now + 60_000,
+            source: "user",
+            directory: "/tmp",
+            paused: false,
+          },
+          {
+            id: "kept",
+            prompt: "modern",
+            mode: "fixed",
+            intervalMs: 60_000,
+            createdAt: now,
+            lastFiredAt: 0,
+            nextDueAt: now + 60_000,
+            source: "user",
+            directory: "/tmp",
+            sessionID: "s1",
+            paused: false,
+          },
+        ],
+      }),
+      "utf-8"
+    )
+    const logCalls = []
+    const store = new LoopStore({
+      storageDir: dir,
+      logger: async (level, message, extra) => logCalls.push({ level, message, extra }),
+    })
+
+    await store.load()
+
+    assert.equal(consoleCalls.length, 0)
+    assert.equal(logCalls.length, 1)
+    assert.equal(logCalls[0].level, "info")
+    assert.match(logCalls[0].message, /cleaned 1 task/i)
+    assert.equal(logCalls[0].extra.count, 1)
+  } finally {
+    console.log = originalLog
+    console.warn = originalWarn
+    console.error = originalError
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("structured logger records corrupted state without console output", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-test-"))
+  const consoleCalls = []
+  const originalLog = console.log
+  const originalWarn = console.warn
+  const originalError = console.error
+  console.log = (...args) => consoleCalls.push(["log", ...args])
+  console.warn = (...args) => consoleCalls.push(["warn", ...args])
+  console.error = (...args) => consoleCalls.push(["error", ...args])
+  try {
+    writeFileSync(join(dir, "tasks.json"), "{not-json", "utf-8")
+    const logCalls = []
+    const store = new LoopStore({
+      storageDir: dir,
+      logger: async (level, message, extra) => logCalls.push({ level, message, extra }),
+    })
+
+    await store.load()
+
+    assert.equal(consoleCalls.length, 0)
+    assert.equal(logCalls.length, 1)
+    assert.equal(logCalls[0].level, "warn")
+    assert.match(logCalls[0].message, /corrupted/i)
+    assert.match(logCalls[0].extra.backup, /\.corrupted\./)
+  } finally {
+    console.log = originalLog
+    console.warn = originalWarn
+    console.error = originalError
+    rmSync(dir, { recursive: true })
+  }
+})
