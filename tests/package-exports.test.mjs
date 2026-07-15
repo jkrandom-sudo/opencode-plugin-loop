@@ -6,6 +6,10 @@ const packageJson = JSON.parse(
   await readFile(new URL("../package.json", import.meta.url), "utf8"),
 )
 
+test("publishes the responsive dialog release", () => {
+  assert.equal(packageJson.version, "0.2.6")
+})
+
 test("publishes explicit server and TUI plugin entrypoints", () => {
   assert.deepEqual(packageJson.exports["./server"], {
     types: "./dist/index.d.ts",
