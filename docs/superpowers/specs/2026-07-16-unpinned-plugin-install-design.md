@@ -37,4 +37,3 @@ The recommended installation and manual configuration paths will both store the 
 - Commit and push the existing pull-request branch.
 - Publish 0.2.7 through npm staged publishing and approve it with 2FA.
 - Verify the npm registry `latest` tag, downloadable tarball, and rendered README.
-

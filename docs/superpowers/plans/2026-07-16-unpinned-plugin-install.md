@@ -87,6 +87,7 @@ git commit -m "docs: use unpinned plugin install guidance"
 **Files:**
 - Modify: `package.json:3`
 - Modify: `package-lock.json:3,9`
+- Modify: `tests/package-exports.test.mjs:10`
 
 **Interfaces:**
 - Consumes: The verified README from Task 1.
@@ -95,6 +96,12 @@ git commit -m "docs: use unpinned plugin install guidance"
 - [ ] **Step 1: Update package metadata**
 
 Set every project version field currently equal to `0.2.6` in `package.json` and `package-lock.json` to `0.2.7`.
+
+Update the published-release assertion in `tests/package-exports.test.mjs`:
+
+```javascript
+assert.equal(packageJson.version, "0.2.7")
+```
 
 - [ ] **Step 2: Verify synchronized versions**
 
@@ -106,10 +113,20 @@ node -e 'const p=require("./package.json"),l=require("./package-lock.json"); if(
 
 Expected: `0.2.7`.
 
-- [ ] **Step 3: Commit package metadata**
+- [ ] **Step 3: Verify the release assertion**
+
+Run:
 
 ```bash
-git add package.json package-lock.json
+node --test tests/package-exports.test.mjs
+```
+
+Expected: all package export tests pass.
+
+- [ ] **Step 4: Commit package metadata**
+
+```bash
+git add package.json package-lock.json tests/package-exports.test.mjs docs/superpowers/plans/2026-07-16-unpinned-plugin-install.md
 git commit -m "chore: prepare 0.2.7 release"
 ```
 
@@ -156,13 +173,41 @@ git status --short --branch
 
 Expected: no whitespace errors and a clean branch ahead of its remote.
 
-- [ ] **Step 4: Push the existing pull-request branch**
+- [ ] **Step 4: Create a documentation release branch**
 
 ```bash
-git push origin codex/responsive-loop-dialog-impl
+git checkout -b codex/unpinned-plugin-install
 ```
 
-Expected: the remote branch and existing pull request include the README and 0.2.7 metadata commits.
+Expected: the worktree is on `codex/unpinned-plugin-install`, based on the tested release commit.
+
+- [ ] **Step 5: Push the release branch**
+
+```bash
+git push -u origin codex/unpinned-plugin-install
+```
+
+Expected: the remote branch contains the README and 0.2.7 metadata commits.
+
+- [ ] **Step 6: Create and merge a focused pull request**
+
+```bash
+gh pr create --base main --head codex/unpinned-plugin-install --title "docs: simplify plugin installation and upgrades" --body "Use the unversioned npm package name in OpenCode installation and configuration examples, add an explicit upgrade command, and prepare the npm 0.2.7 documentation release."
+gh pr merge --merge
+```
+
+Expected: the pull request contains only the unpinned documentation release changes and is merged into GitHub `main`.
+
+- [ ] **Step 7: Verify GitHub main**
+
+Run:
+
+```bash
+git fetch origin
+git diff --exit-code HEAD:README.md origin/main:README.md
+```
+
+Expected: GitHub `main` contains the same README as the verified release commit.
 
 ### Task 4: Publish and verify npm 0.2.7
 
@@ -209,4 +254,3 @@ npm pack https://registry.npmjs.org/opencode-plugin-loop/-/opencode-plugin-loop-
 ```
 
 Expected: package ID `opencode-plugin-loop@0.2.7`, README included, and integrity metadata returned.
-

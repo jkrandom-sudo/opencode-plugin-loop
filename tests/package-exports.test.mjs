@@ -7,7 +7,7 @@ const packageJson = JSON.parse(
 )
 
 test("publishes the responsive dialog release", () => {
-  assert.equal(packageJson.version, "0.2.6")
+  assert.equal(packageJson.version, "0.2.7")
 })
 
 test("publishes explicit server and TUI plugin entrypoints", () => {
