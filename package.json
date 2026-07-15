@@ -64,5 +64,8 @@
     "commands": [
       "commands/loop.md"
     ]
+  },
+  "dependencies": {
+    "clipboardy": "^4.0.0"
   }
 }
