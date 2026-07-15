@@ -18,6 +18,43 @@
 
 ---
 
+### Task 0: Restore the pre-existing jitter baseline
+
+**Files:**
+- Modify: `src/jitter.ts`
+- Verify: `tests/jitter.test.mjs`
+
+**Interfaces:**
+- Preserves: `Jitter.compute(taskId, intervalMs, atMs?)`.
+- Enforces: short-interval jitter is no greater than both 15 seconds and half
+  the requested interval.
+
+- [ ] **Step 1: Use the existing failing regression as RED evidence**
+
+Run: `npm run build && node --test --test-name-pattern='short-interval tasks' tests/jitter.test.mjs`
+
+Expected before the fix: FAIL because a 10-second or 5-second task can receive
+more than half an interval of jitter.
+
+- [ ] **Step 2: Apply the minimal bound**
+
+For intervals below five minutes, calculate
+`Math.min(MAX_SHORT_JITTER_MS, intervalMs / 2)` instead of the fixed 15-second
+bound. Update the nearby documentation to describe the bound accurately.
+
+- [ ] **Step 3: Verify the focused and full baseline tests**
+
+Run: `npm run build && node --test tests/jitter.test.mjs && npm test`
+
+Expected: all jitter tests and all project tests pass.
+
+- [ ] **Step 4: Commit Task 0**
+
+```bash
+git add src/jitter.ts dist/jitter.js docs/superpowers/plans/2026-07-15-tui-safe-loop-feedback.md
+git commit -m "fix: cap jitter for very short intervals"
+```
+
 ### Task 1: Runtime feedback and command consumption
 
 **Files:**

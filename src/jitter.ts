@@ -8,7 +8,7 @@
  *
  *   tier         |  interval range   |  max jitter     |  example
  *   -------------+-------------------+-----------------+------------------------
- *   short        |  < 5 minutes      |  ±15 seconds    |  30s task → 15..45s
+ *   short        |  < 5 minutes      |  min(±15s, ±50%)|  30s task → 15..45s
  *   medium       |  5 min .. 1 hour  |  ±5%, capped    |  10m task → 9.5..10.5m
  *                |                   |  at ±1 minute   |
  *   long         |  ≥ 1 hour         |  ±30 minutes    |  6h task → 5.5..6.5h
@@ -37,9 +37,8 @@ const SECOND_MS = 1_000
 const FIVE_MIN_MS = 5 * 60_000
 const ONE_HOUR_MS = 60 * 60_000
 
-/** Tier-1: short intervals (<5m). Fixed ±15s — proportional jitter on a 30s
- *  task would be ±15s anyway, but using a constant keeps 60s and 30s tasks
- *  distinct enough to spread API load. */
+/** Tier-1: short intervals (<5m). Capped at both ±15s and half the interval,
+ *  so very short tasks never receive a zero or negative effective delay. */
 const MAX_SHORT_JITTER_MS = 15_000
 
 /** Tier-2: medium intervals (5m..1h). ±5% of interval, capped at ±1 minute. */
@@ -65,7 +64,7 @@ export function Jitter(this: unknown, _percent: number = 0.1): JitterInstance {
     compute(taskId, intervalMs, atMs: number = Date.now()) {
       let maxMs: number
       if (intervalMs < FIVE_MIN_MS) {
-        maxMs = MAX_SHORT_JITTER_MS
+        maxMs = Math.min(MAX_SHORT_JITTER_MS, intervalMs / 2)
       } else if (intervalMs < ONE_HOUR_MS) {
         maxMs = Math.min(intervalMs * MEDIUM_JITTER_PCT, MAX_MEDIUM_JITTER_MS)
       } else {
