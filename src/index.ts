@@ -30,6 +30,12 @@ import { CronParser } from "./cron-parser.js"
 import { Jitter } from "./jitter.js"
 import { buildLoopTools } from "./tools/loop-tools.js"
 import type { LoopConfig } from "./types.js"
+import {
+  consumeLoopCommand,
+  createLoopLogger,
+  errorMessage,
+  showLoopResult,
+} from "./runtime-feedback.js"
 
 const DEFAULT_CONFIG: Required<LoopConfig> = {
   storageDir: "",
@@ -42,6 +48,7 @@ const DEFAULT_CONFIG: Required<LoopConfig> = {
 }
 
 export const LoopPlugin: Plugin = async (ctx) => {
+  const logger = createLoopLogger(ctx.client)
   const opts = (ctx as any).options as Partial<LoopConfig> | undefined
   const config = { ...DEFAULT_CONFIG, ...(opts ?? {}) }
 
@@ -94,7 +101,7 @@ export const LoopPlugin: Plugin = async (ctx) => {
         }
       }
     } catch (err) {
-      console.warn(`[opencode-plugin-loop] ticker error:`, err)
+      await logger("error", "ticker error", { error: errorMessage(err) })
     }
   }, config.tickerIntervalMs)
 
@@ -110,9 +117,10 @@ export const LoopPlugin: Plugin = async (ctx) => {
         if (sid) {
           const n = await store.cancelBySession(sid)
           if (n > 0) {
-            console.log(
-              `[opencode-plugin-loop] cleaned ${n} task(s) for deleted session ${sid.slice(0, 8)}`
-            )
+            await logger("info", `cleaned ${n} task(s) for deleted session`, {
+              sessionID: sid,
+              count: n,
+            })
           }
           if (activeSessionID === sid) activeSessionID = null
         }
@@ -124,12 +132,22 @@ export const LoopPlugin: Plugin = async (ctx) => {
       setActive(input.sessionID)
     },
 
-    "command.execute.before": async (input, _output) => {
+    "command.execute.before": async (input, output) => {
       if (input.command !== "loop") return
       setActive(input.sessionID)
+      consumeLoopCommand(output.parts)
       const args = input.arguments || ""
-      const result = await scheduler.handleUserCommand(args, ctx.directory, input.sessionID)
-      console.log(`[opencode-plugin-loop] ${result.message}`)
+      let result
+      try {
+        result = await scheduler.handleUserCommand(args, ctx.directory, input.sessionID)
+      } catch (error) {
+        result = { message: `❌ /loop failed: ${errorMessage(error)}` }
+      }
+      await logger(result.message.startsWith("❌") ? "error" : "info", result.message, {
+        sessionID: input.sessionID,
+        command: args,
+      })
+      await showLoopResult(ctx.client, result, logger)
     },
   }
 

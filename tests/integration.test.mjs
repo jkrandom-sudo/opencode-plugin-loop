@@ -10,7 +10,7 @@
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 
@@ -283,6 +283,146 @@ test("plugin loads legacy tasks.json, drops orphans, keeps session-bound ones", 
 
     await hooks.dispose()
   } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("TUI-safe /loop list uses toast and consumes the model-facing command", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-int-"))
+  const consoleCalls = []
+  const originalConsole = {
+    log: console.log,
+    warn: console.warn,
+    error: console.error,
+  }
+  console.log = (...args) => consoleCalls.push(["log", ...args])
+  console.warn = (...args) => consoleCalls.push(["warn", ...args])
+  console.error = (...args) => consoleCalls.push(["error", ...args])
+
+  let hooks
+  try {
+    const logCalls = []
+    const toastCalls = []
+    const mockClient = {
+      app: {
+        async log(args) {
+          logCalls.push(args)
+          return true
+        },
+      },
+      tui: {
+        async showToast(args) {
+          toastCalls.push(args)
+          return true
+        },
+      },
+    }
+    hooks = await pluginModule.LoopPlugin({
+      client: mockClient,
+      project: { id: "test" },
+      directory: dir,
+      worktree: dir,
+      $: {},
+      serverUrl: new URL("http://localhost:3000"),
+      experimental_workspace: { register: () => {} },
+    })
+    const output = {
+      parts: [
+        {
+          id: "part-1",
+          sessionID: "sA",
+          messageID: "m1",
+          type: "text",
+          text: "list",
+        },
+      ],
+    }
+
+    await hooks["command.execute.before"](
+      { command: "loop", arguments: "list", sessionID: "sA" },
+      output
+    )
+
+    assert.equal(consoleCalls.length, 0)
+    assert.equal(toastCalls.length, 1)
+    assert.equal(toastCalls[0].body.variant, "info")
+    assert.match(toastCalls[0].body.message, /loop task/i)
+    assert.doesNotMatch(output.parts[0].text, /^list$/)
+    assert.match(output.parts[0].text, /already handled/i)
+    assert.equal(logCalls.length, 1)
+  } finally {
+    if (hooks) await hooks.dispose()
+    console.log = originalConsole.log
+    console.warn = originalConsole.warn
+    console.error = originalConsole.error
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("command failure becomes an error toast instead of rejecting", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-int-"))
+  let hooks
+  try {
+    const cacheDir = join(dir, ".opencode/cache/loop")
+    mkdirSync(cacheDir, { recursive: true })
+    const now = Date.now()
+    const tasks = Array.from({ length: 50 }, (_, index) => ({
+      id: `full-${index}`,
+      prompt: `existing task ${index}`,
+      mode: "fixed",
+      intervalMs: 60_000,
+      createdAt: now,
+      lastFiredAt: 0,
+      nextDueAt: now + 60_000,
+      source: "user",
+      directory: dir,
+      sessionID: "sA",
+      paused: false,
+    }))
+    writeFileSync(join(cacheDir, "tasks.json"), JSON.stringify({ version: 1, tasks }), "utf-8")
+
+    const toastCalls = []
+    const mockClient = {
+      app: { log: async () => true },
+      tui: {
+        async showToast(args) {
+          toastCalls.push(args)
+          return true
+        },
+      },
+    }
+    hooks = await pluginModule.LoopPlugin({
+      client: mockClient,
+      project: { id: "test" },
+      directory: dir,
+      worktree: dir,
+      $: {},
+      serverUrl: new URL("http://localhost:3000"),
+      experimental_workspace: { register: () => {} },
+    })
+    const output = {
+      parts: [
+        {
+          id: "part-1",
+          sessionID: "sA",
+          messageID: "m1",
+          type: "text",
+          text: "5m another task",
+        },
+      ],
+    }
+
+    await hooks["command.execute.before"](
+      { command: "loop", arguments: "5m another task", sessionID: "sA" },
+      output
+    )
+
+    assert.equal(toastCalls.length, 1)
+    assert.equal(toastCalls[0].body.variant, "error")
+    assert.match(toastCalls[0].body.message, /max tasks/i)
+    assert.match(output.parts[0].text, /already handled/i)
+  } finally {
+    if (hooks) await hooks.dispose()
     rmSync(dir, { recursive: true })
   }
 })
