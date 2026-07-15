@@ -57,6 +57,7 @@ function createFakeApi() {
         toasts.push(input)
       },
     },
+    theme: { current: {} },
     keymap: {
       registerLayer(layer) {
         const record = { layer, active: true }
@@ -102,11 +103,25 @@ function emitLoop(api, message, variant = "info") {
   })
 }
 
+function createTestLoopTuiPlugin(dependencies = {}) {
+  return createLoopTuiPlugin({
+    writeClipboard: async () => {},
+    renderDialog(props) {
+      return props
+    },
+    ...dependencies,
+  })
+}
+
 function select(api, title) {
   const view = api.__view()
-  const option = view.options.find((candidate) => candidate.title === title)
-  assert.ok(option, `missing dialog option: ${title}`)
-  view.onSelect(option)
+  const action = view.actions.find((candidate) => {
+    if (candidate.type === "copy-id") return `Copy ID: ${candidate.taskId}` === title
+    if (candidate.type === "copy-all") return title === "Copy all"
+    return title === "Close"
+  })
+  assert.ok(action, `missing dialog action: ${title}`)
+  view.onActivate(action)
 }
 
 const settle = () => new Promise((resolve) => setImmediate(resolve))
@@ -119,39 +134,46 @@ test("exports a TUI-only OpenCode plugin module", () => {
 
 test("shows variant-aware status treatment in the dialog title", async () => {
   const api = createFakeApi()
-  await createLoopTuiPlugin({ writeClipboard: async () => {} })(api)
+  await createTestLoopTuiPlugin()(api)
 
   emitLoop(api, "Created", "success")
-  assert.match(api.__view().title, /^✓ Loop/)
+  assert.equal(api.__view().variant, "success")
   emitLoop(api, "Failed", "error")
-  assert.match(api.__view().title, /^✕ Loop/)
+  assert.equal(api.__view().variant, "error")
 })
 
 test("opens one native dialog with per-task copy actions", async () => {
   const api = createFakeApi()
   const copied = []
-  await createLoopTuiPlugin({ writeClipboard: async (text) => copied.push(text) })(api)
+  await createTestLoopTuiPlugin({
+    writeClipboard: async (text) => copied.push(text),
+  })(api)
 
   emitLoop(api, "[first01] active\n[second2] paused")
 
   assert.equal(api.ui.dialog.open, true)
   assert.equal(api.ui.dialog.depth, 1)
-  assert.match(api.__view().title, /\[first01\] active/)
+  assert.match(api.__view().message, /\[first01\] active/)
   assert.deepEqual(
-    api.__view().options.map((option) => option.title),
+    api.__view().actions.map((action) =>
+      action.type === "copy-id" ? `Copy ID: ${action.taskId}` : action.type === "copy-all" ? "Copy all" : "Close"
+    ),
     ["Copy ID: first01", "Copy ID: second2", "Copy all", "Close"],
   )
 
   select(api, "Copy ID: second2")
   await settle()
   assert.deepEqual(copied, ["second2"])
-  assert.equal(api.ui.dialog.open, true)
+  assert.equal(api.ui.dialog.open, false)
+  assert.equal(api.__layers.filter((layer) => layer.active).length, 0)
 })
 
 test("copies the exact complete feedback text", async () => {
   const api = createFakeApi()
   const copied = []
-  await createLoopTuiPlugin({ writeClipboard: async (text) => copied.push(text) })(api)
+  await createTestLoopTuiPlugin({
+    writeClipboard: async (text) => copied.push(text),
+  })(api)
   const message = "Loop started [id=abc123]\nCancel: /loop cancel abc123"
 
   emitLoop(api, message, "success")
@@ -160,12 +182,13 @@ test("copies the exact complete feedback text", async () => {
 
   assert.deepEqual(copied, [message])
   assert.equal(api.__toasts.at(-1).title, LOOP_COPY_TITLE)
-  assert.equal(api.ui.dialog.open, true)
+  assert.equal(api.ui.dialog.open, false)
+  assert.equal(api.__layers.filter((layer) => layer.active).length, 0)
 })
 
 test("keeps the dialog open and reports clipboard errors without recursion", async () => {
   const api = createFakeApi()
-  await createLoopTuiPlugin({
+  await createTestLoopTuiPlugin({
     writeClipboard: async () => {
       throw new Error("clipboard unavailable")
     },
@@ -183,21 +206,21 @@ test("keeps the dialog open and reports clipboard errors without recursion", asy
 
 test("replaces prior Loop feedback instead of stacking dialogs", async () => {
   const api = createFakeApi()
-  await createLoopTuiPlugin({ writeClipboard: async () => {} })(api)
+  await createTestLoopTuiPlugin()(api)
 
   emitLoop(api, "Loop started [id=first01]", "success")
   const firstLayer = api.__layers.at(-1)
   emitLoop(api, "Loop started [id=second2]", "success")
 
   assert.equal(api.ui.dialog.depth, 1)
-  assert.match(api.__view().title, /second2/)
+  assert.match(api.__view().message, /second2/)
   assert.equal(firstLayer.active, false)
   assert.equal(api.__layers.filter((layer) => layer.active).length, 1)
 })
 
 test("closes from the action or temporary q shortcut", async () => {
   const api = createFakeApi()
-  await createLoopTuiPlugin({ writeClipboard: async () => {} })(api)
+  await createTestLoopTuiPlugin()(api)
 
   emitLoop(api, "No loop tasks found")
   select(api, "Close")
@@ -206,13 +229,75 @@ test("closes from the action or temporary q shortcut", async () => {
 
   emitLoop(api, "No loop tasks found")
   const layer = api.__layers.findLast((candidate) => candidate.active).layer
-  layer.commands[0].run()
+  layer.commands.find((command) => command.name === "loop.dialog.close").run()
   assert.equal(api.ui.dialog.open, false)
+})
+
+test("keyboard commands drive the responsive view and Enter closes after copy", async () => {
+  const api = createFakeApi()
+  const copied = []
+  const pageDeltas = []
+  let selected = 0
+  await createTestLoopTuiPlugin({
+    writeClipboard: async (text) => copied.push(text),
+    renderDialog(props) {
+      props.ref({
+        move(delta) {
+          selected = (selected + delta + props.actions.length) % props.actions.length
+        },
+        activate() {
+          props.onActivate(props.actions[selected])
+        },
+        pageMessage(delta) {
+          pageDeltas.push(delta)
+        },
+        dispose() {},
+      })
+      return props
+    },
+  })(api)
+
+  emitLoop(api, "Loop started [id=abc123]", "success")
+  const layer = api.__layers.findLast((candidate) => candidate.active).layer
+  const run = (name) => layer.commands.find((command) => command.name === name).run()
+  assert.deepEqual(
+    layer.bindings.map((binding) => binding.key),
+    ["up", "down", "enter", "return", "space", "pageup", "pagedown", "q"],
+  )
+
+  run("loop.dialog.next")
+  run("loop.dialog.page-down")
+  run("loop.dialog.activate")
+  await settle()
+
+  assert.deepEqual(pageDeltas, [1])
+  assert.deepEqual(copied, ["Loop started [id=abc123]"])
+  assert.equal(api.ui.dialog.open, false)
+})
+
+test("a slow copy from a replaced dialog cannot close the current dialog", async () => {
+  const api = createFakeApi()
+  let resolveCopy
+  await createTestLoopTuiPlugin({
+    writeClipboard: () => new Promise((resolve) => {
+      resolveCopy = resolve
+    }),
+  })(api)
+
+  emitLoop(api, "Loop started [id=first01]", "success")
+  select(api, "Copy ID: first01")
+  emitLoop(api, "Loop started [id=second2]", "success")
+  assert.match(api.__view().message, /second2/)
+
+  resolveCopy()
+  await settle()
+  assert.equal(api.ui.dialog.open, true)
+  assert.match(api.__view().message, /second2/)
 })
 
 test("ignores unrelated toasts and cleans up all owned state on disposal", async () => {
   const api = createFakeApi()
-  await createLoopTuiPlugin({ writeClipboard: async () => {} })(api)
+  await createTestLoopTuiPlugin()(api)
 
   api.__emit("tui.toast.show", {
     type: "tui.toast.show",
@@ -231,13 +316,13 @@ test("ignores unrelated toasts and cleans up all owned state on disposal", async
 
 test("cleans up and logs when dialog rendering fails, then recovers", async () => {
   const api = createFakeApi()
-  const render = api.ui.DialogSelect
   let failRender = true
-  api.ui.DialogSelect = (props) => {
-    if (failRender) throw new Error("render failed")
-    return render(props)
-  }
-  await createLoopTuiPlugin({ writeClipboard: async () => {} })(api)
+  await createTestLoopTuiPlugin({
+    renderDialog(props) {
+      if (failRender) throw new Error("render failed")
+      return props
+    },
+  })(api)
 
   assert.doesNotThrow(() => emitLoop(api, "First [id=first01]", "success"))
   await settle()
@@ -251,7 +336,7 @@ test("cleans up and logs when dialog rendering fails, then recovers", async () =
   failRender = false
   emitLoop(api, "Second [id=second2]", "success")
   assert.equal(api.ui.dialog.open, true)
-  assert.match(api.__view().title, /second2/)
+  assert.match(api.__view().message, /second2/)
 })
 
 test("does not leak state when close-layer registration fails", async () => {
@@ -262,7 +347,7 @@ test("does not leak state when close-layer registration fails", async () => {
     if (failRegistration) throw new Error("keymap failed")
     return registerLayer(layer)
   }
-  await createLoopTuiPlugin({ writeClipboard: async () => {} })(api)
+  await createTestLoopTuiPlugin()(api)
 
   assert.doesNotThrow(() => emitLoop(api, "First [id=first01]", "success"))
   await settle()

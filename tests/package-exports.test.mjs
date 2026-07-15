@@ -6,6 +6,10 @@ const packageJson = JSON.parse(
   await readFile(new URL("../package.json", import.meta.url), "utf8"),
 )
 
+test("publishes the responsive dialog release", () => {
+  assert.equal(packageJson.version, "0.2.6")
+})
+
 test("publishes explicit server and TUI plugin entrypoints", () => {
   assert.deepEqual(packageJson.exports["./server"], {
     types: "./dist/index.d.ts",
@@ -31,6 +35,12 @@ test("declares the minimum OpenCode version required by the TUI API", () => {
 
 test("pins the clipboard runtime used by the published TUI companion", () => {
   assert.equal(packageJson.dependencies.clipboardy, "4.0.0")
+})
+
+test("declares the host TUI peers used by the responsive dialog", () => {
+  assert.equal(packageJson.peerDependencies["@opentui/core"], ">=0.4.3")
+  assert.equal(packageJson.peerDependencies["@opentui/solid"], ">=0.4.3")
+  assert.equal(packageJson.peerDependencies["solid-js"], "1.9.12")
 })
 
 test("test command always builds fresh output before running tests", () => {

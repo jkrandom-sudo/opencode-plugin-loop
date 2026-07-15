@@ -23,6 +23,7 @@ A drop-in `/loop` command for [opencode](https://opencode.ai), modeled after Cla
 - **LLM-callable tools** — `loop_schedule`, `loop_status` (session-bound by default)
 - **Interactive Loop results** — `/loop` results open in a dedicated native dialog instead of writing over the prompt
 - **Clipboard actions** — copy the complete result or copy any displayed task ID with one action
+- **Responsive layout** — short or narrow terminals keep the dialog inside the viewport with independently scrollable result and action areas
 - **Easy dismissal** — choose **Close**, press `q`, or use the native dialog's `Esc` key
 
 ## Requirements
@@ -39,14 +40,14 @@ The scheduling server plugin still has a native toast fallback, while supported 
 Use OpenCode's plugin installer so the package's server and TUI entrypoints are both detected and added to the correct configs:
 
 ```bash
-opencode plugin opencode-plugin-loop@0.2.5 --global --force
+opencode plugin opencode-plugin-loop@0.2.6 --global --force
 ```
 
-This pins version 0.2.5 and updates both global `opencode.json` and `tui.json`.
+This pins version 0.2.6 and updates both global `opencode.json` and `tui.json`.
 
 If `/loop` is not already defined in your OpenCode configuration, add the command definition shown below to `opencode.json`. OpenCode detects both plugin entrypoints from the npm package, but it does not currently copy the bundled `commands/loop.md` file into your config directory.
 
-To upgrade after a newer version is released, replace `0.2.5` in the command with the target version and run it again with `--force`.
+To upgrade after a newer version is released, replace `0.2.6` in the command with the target version and run it again with `--force`.
 
 ### Option 2: Manual configuration
 
@@ -56,7 +57,7 @@ Server config (`~/.config/opencode/opencode.json`):
 
 ```json
 {
-  "plugin": ["opencode-plugin-loop@0.2.5"],
+  "plugin": ["opencode-plugin-loop@0.2.6"],
   "command": {
     "loop": {
       "description": "定时重复执行 prompt。可选间隔: s/m/h/d。子命令: list | status | cancel <id> | pause <id> | resume <id> | stop-all（加 --all 跨 session）",
@@ -72,7 +73,7 @@ TUI config (`~/.config/opencode/tui.json`):
 ```json
 {
   "$schema": "https://opencode.ai/tui.json",
-  "plugin": ["opencode-plugin-loop@0.2.5"]
+  "plugin": ["opencode-plugin-loop@0.2.6"]
 }
 ```
 
@@ -138,7 +139,7 @@ Every `/loop` command result opens in a separate native OpenCode dialog. It keep
 - **Copy all** for the exact complete result text
 - **Close** to dismiss the dialog
 
-Use the mouse or arrow keys to select an action, then press `Enter` or `Space`. Press `q` or `Esc` to close. A newer Loop result replaces the previous Loop dialog rather than stacking another one.
+Use the mouse or arrow keys to select an action, then press `Enter` or `Space`. A successful **Copy ID** or **Copy all** action shows a confirmation and closes the dialog immediately; if clipboard access fails, the dialog stays open and shows an error. Press `Page Up` or `Page Down` to scroll long result text, or press `q` or `Esc` to close. In short or narrow terminals, the dialog scales to the available viewport and keeps the result and action lists independently scrollable. A newer Loop result replaces the previous Loop dialog rather than stacking another one.
 
 ### Programmatic (LLM tools)
 
@@ -204,9 +205,9 @@ Tasks persist to `.opencode/cache/loop/tasks.json` (per project). Fire history i
 
 ## Troubleshooting
 
-### Package entrypoints in 0.2.5
+### Package entrypoints in 0.2.6
 
-Version 0.2.5 exposes separate `opencode-plugin-loop/server` and `opencode-plugin-loop/tui` entrypoints so OpenCode can load the scheduler and interactive dialog independently. The root export remains the v1-compatible server module for backward compatibility. Programmatic consumers should use the named factory:
+Version 0.2.6 exposes separate `opencode-plugin-loop/server` and `opencode-plugin-loop/tui` entrypoints so OpenCode can load the scheduler and responsive interactive dialog independently. The root export remains the v1-compatible server module for backward compatibility. Programmatic consumers should use the named factory:
 
 ```typescript
 import { LoopPlugin } from "opencode-plugin-loop"
@@ -214,7 +215,7 @@ import { LoopPlugin } from "opencode-plugin-loop"
 
 ### Task lines overlap the input area
 
-Versions before 0.2.4 wrote `/loop` results directly to the terminal. OpenCode owns and redraws the terminal UI, so those writes could leave task IDs and prompts over the input area. Upgrade to 0.2.5 for the dedicated interactive dialog; runtime diagnostics go to OpenCode's structured application log.
+Versions before 0.2.4 wrote `/loop` results directly to the terminal. OpenCode owns and redraws the terminal UI, so those writes could leave task IDs and prompts over the input area. Upgrade to 0.2.6 for the responsive interactive dialog; runtime diagnostics go to OpenCode's structured application log.
 
 Also make sure the plugin is installed from only one source. OpenCode loads npm plugins from `opencode.json` and copied plugins under `~/.config/opencode/plugins/` independently, even when they have the same package name.
 
