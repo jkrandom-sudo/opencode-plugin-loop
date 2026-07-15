@@ -8,6 +8,7 @@ function createFakeApi() {
   const eventHandlers = new Map()
   const disposers = []
   const toasts = []
+  const logs = []
   const layers = []
   let dialogEntry
 
@@ -34,6 +35,13 @@ function createFakeApi() {
   }
 
   return {
+    client: {
+      app: {
+        async log(input) {
+          logs.push(input)
+        },
+      },
+    },
     event: {
       on(type, handler) {
         eventHandlers.set(type, handler)
@@ -74,6 +82,7 @@ function createFakeApi() {
       return dialogEntry?.view
     },
     __toasts: toasts,
+    __logs: logs,
     __layers: layers,
     async __dispose() {
       for (const dispose of [...disposers]) await dispose()
@@ -103,9 +112,19 @@ function select(api, title) {
 const settle = () => new Promise((resolve) => setImmediate(resolve))
 
 test("exports a TUI-only OpenCode plugin module", () => {
-  assert.equal(LoopTuiModule.id, "opencode-plugin-loop")
+  assert.equal(LoopTuiModule.id, "opencode-plugin-loop-tui")
   assert.equal(typeof LoopTuiModule.tui, "function")
   assert.equal(LoopTuiModule.server, undefined)
+})
+
+test("shows variant-aware status treatment in the dialog title", async () => {
+  const api = createFakeApi()
+  await createLoopTuiPlugin({ writeClipboard: async () => {} })(api)
+
+  emitLoop(api, "Created", "success")
+  assert.match(api.__view().title, /^✓ Loop/)
+  emitLoop(api, "Failed", "error")
+  assert.match(api.__view().title, /^✕ Loop/)
 })
 
 test("opens one native dialog with per-task copy actions", async () => {
@@ -208,4 +227,50 @@ test("ignores unrelated toasts and cleans up all owned state on disposal", async
 
   emitLoop(api, "Loop started [id=after01]", "success")
   assert.equal(api.ui.dialog.open, false)
+})
+
+test("cleans up and logs when dialog rendering fails, then recovers", async () => {
+  const api = createFakeApi()
+  const render = api.ui.DialogSelect
+  let failRender = true
+  api.ui.DialogSelect = (props) => {
+    if (failRender) throw new Error("render failed")
+    return render(props)
+  }
+  await createLoopTuiPlugin({ writeClipboard: async () => {} })(api)
+
+  assert.doesNotThrow(() => emitLoop(api, "First [id=first01]", "success"))
+  await settle()
+  assert.equal(api.ui.dialog.open, false)
+  assert.equal(api.__layers.filter((layer) => layer.active).length, 0)
+  assert.equal(api.__logs.length, 1)
+  assert.equal(api.__logs[0].service, "opencode-plugin-loop")
+  assert.equal(api.__logs[0].level, "warn")
+  assert.match(api.__logs[0].message, /dialog/i)
+
+  failRender = false
+  emitLoop(api, "Second [id=second2]", "success")
+  assert.equal(api.ui.dialog.open, true)
+  assert.match(api.__view().title, /second2/)
+})
+
+test("does not leak state when close-layer registration fails", async () => {
+  const api = createFakeApi()
+  const registerLayer = api.keymap.registerLayer
+  let failRegistration = true
+  api.keymap.registerLayer = (layer) => {
+    if (failRegistration) throw new Error("keymap failed")
+    return registerLayer(layer)
+  }
+  await createLoopTuiPlugin({ writeClipboard: async () => {} })(api)
+
+  assert.doesNotThrow(() => emitLoop(api, "First [id=first01]", "success"))
+  await settle()
+  assert.equal(api.ui.dialog.open, false)
+  assert.equal(api.__layers.filter((layer) => layer.active).length, 0)
+  assert.equal(api.__logs.length, 1)
+
+  failRegistration = false
+  emitLoop(api, "Second [id=second2]", "success")
+  assert.equal(api.ui.dialog.open, true)
 })

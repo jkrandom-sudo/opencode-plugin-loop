@@ -30,7 +30,7 @@ A drop-in `/loop` command for [opencode](https://opencode.ai), modeled after Cla
 - OpenCode **1.17.18 or newer** for the interactive TUI companion
 - Node.js **18 or newer**
 
-The scheduling server plugin still has a native toast fallback, but both interactive entrypoints are installed automatically on supported OpenCode versions.
+The scheduling server plugin still has a native toast fallback, while supported OpenCode versions install both package entrypoints automatically.
 
 ## Install
 
@@ -42,7 +42,9 @@ Use OpenCode's plugin installer so the package's server and TUI entrypoints are 
 opencode plugin opencode-plugin-loop@0.2.5 --global --force
 ```
 
-This pins version 0.2.5 and updates both global `opencode.json` and `tui.json`. The bundled `/loop` command is installed with the package.
+This pins version 0.2.5 and updates both global `opencode.json` and `tui.json`.
+
+If `/loop` is not already defined in your OpenCode configuration, add the command definition shown below to `opencode.json`. OpenCode detects both plugin entrypoints from the npm package, but it does not currently copy the bundled `commands/loop.md` file into your config directory.
 
 To upgrade after a newer version is released, replace `0.2.5` in the command with the target version and run it again with `--force`.
 
@@ -54,7 +56,14 @@ Server config (`~/.config/opencode/opencode.json`):
 
 ```json
 {
-  "plugin": ["opencode-plugin-loop@0.2.5"]
+  "plugin": ["opencode-plugin-loop@0.2.5"],
+  "command": {
+    "loop": {
+      "description": "定时重复执行 prompt。可选间隔: s/m/h/d。子命令: list | status | cancel <id> | pause <id> | resume <id> | stop-all（加 --all 跨 session）",
+      "template": "$ARGUMENTS",
+      "agent": "build"
+    }
+  }
 }
 ```
 

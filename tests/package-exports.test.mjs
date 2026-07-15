@@ -29,6 +29,10 @@ test("declares the minimum OpenCode version required by the TUI API", () => {
   assert.equal(packageJson.peerDependencies["@opencode-ai/plugin"], ">=1.17.18")
 })
 
+test("pins the clipboard runtime used by the published TUI companion", () => {
+  assert.equal(packageJson.dependencies.clipboardy, "4.0.0")
+})
+
 test("test command always builds fresh output before running tests", () => {
   assert.match(packageJson.scripts.test, /^npm run build && /)
 })
