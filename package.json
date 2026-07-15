@@ -11,6 +11,14 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./server": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./tui": {
+      "types": "./dist/tui.d.ts",
+      "import": "./dist/tui.js"
+    },
     "./commands/loop.md": "./commands/loop.md",
     "./commands/*": "./commands/*"
   },
@@ -42,20 +50,21 @@
   },
   "homepage": "https://github.com/jkrandom-sudo/opencode-plugin-loop#readme",
   "engines": {
-    "node": ">=18"
+    "node": ">=18",
+    "opencode": ">=1.17.18"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepare": "npm run build",
-    "test": "node --test tests/*.test.mjs",
+    "test": "npm run build && node --test tests/*.test.mjs",
     "dry-run": "npm publish --dry-run",
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": "*"
+    "@opencode-ai/plugin": ">=1.17.18"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "latest",
+    "@opencode-ai/plugin": "^1.17.18",
     "@types/node": "^22.0.0",
     "typescript": "^5.4.0"
   },
