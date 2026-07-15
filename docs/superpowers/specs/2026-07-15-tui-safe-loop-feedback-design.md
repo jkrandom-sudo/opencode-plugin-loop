@@ -57,7 +57,7 @@ instructions while keeping the command lifecycle valid.
 
 ### Packaging and installation guidance
 
-Bump the package to `0.2.4`, rebuild committed `dist` files, and add a README
+Bump the package to `0.2.4`, rebuild the ignored `dist` publish artifacts, and add a README
 troubleshooting note explaining that users must not keep both the npm plugin and
 a copied global plugin directory. OpenCode loads both sources independently.
 

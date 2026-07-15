@@ -23,6 +23,7 @@ export function createLoopLogger(client: PluginInput["client"]): LoopLogger {
     try {
       if (!client.app?.log) return
       await client.app.log({
+        throwOnError: true,
         body: {
           service: SERVICE,
           level,
@@ -68,6 +69,7 @@ export async function showLoopResult(
 ): Promise<void> {
   try {
     await client.tui.showToast({
+      throwOnError: true,
       body: {
         title: "Loop",
         message: result.message,

@@ -47,6 +47,15 @@ const DEFAULT_CONFIG: Required<LoopConfig> = {
   tickerIntervalMs: 5_000,
 }
 
+function commandAction(args: string): string {
+  const head = args.trim().split(/\s+/, 1)[0]?.toLowerCase()
+  if (!head) return "maintenance"
+  if (["list", "status", "cancel", "stop", "pause", "resume", "stop-all"].includes(head)) {
+    return head
+  }
+  return "schedule"
+}
+
 export const LoopPlugin: Plugin = async (ctx) => {
   const logger = createLoopLogger(ctx.client)
   const opts = (ctx as any).options as Partial<LoopConfig> | undefined
@@ -147,7 +156,8 @@ export const LoopPlugin: Plugin = async (ctx) => {
       }
       await logger(result.message.startsWith("❌") ? "error" : "info", result.message, {
         sessionID: input.sessionID,
-        command: args,
+        action: commandAction(args),
+        argumentLength: args.length,
       })
       await showLoopResult(ctx.client, result, logger)
     },

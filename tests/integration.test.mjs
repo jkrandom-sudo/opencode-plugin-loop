@@ -346,11 +346,16 @@ test("TUI-safe /loop list uses toast and consumes the model-facing command", asy
 
     assert.equal(consoleCalls.length, 0)
     assert.equal(toastCalls.length, 1)
+    assert.equal(toastCalls[0].throwOnError, true)
     assert.equal(toastCalls[0].body.variant, "info")
     assert.match(toastCalls[0].body.message, /loop task/i)
     assert.doesNotMatch(output.parts[0].text, /^list$/)
     assert.match(output.parts[0].text, /already handled/i)
     assert.equal(logCalls.length, 1)
+    assert.equal(logCalls[0].throwOnError, true)
+    assert.equal(logCalls[0].body.extra.action, "list")
+    assert.equal(logCalls[0].body.extra.argumentLength, 4)
+    assert.equal(logCalls[0].body.extra.command, undefined)
   } finally {
     if (hooks) await hooks.dispose()
     console.log = originalConsole.log
@@ -422,6 +427,50 @@ test("command failure becomes an error toast instead of rejecting", async () => 
     assert.equal(toastCalls[0].body.variant, "error")
     assert.match(toastCalls[0].body.message, /max tasks/i)
     assert.match(output.parts[0].text, /already handled/i)
+  } finally {
+    if (hooks) await hooks.dispose()
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("toast transport failure is recorded in structured logs", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-int-"))
+  let hooks
+  try {
+    const logCalls = []
+    const mockClient = {
+      app: {
+        async log(args) {
+          logCalls.push(args)
+          return { data: true }
+        },
+      },
+      tui: {
+        async showToast(args) {
+          if (args.throwOnError) throw new Error("toast unavailable")
+          return { error: { message: "toast unavailable" } }
+        },
+      },
+    }
+    hooks = await pluginModule.LoopPlugin({
+      client: mockClient,
+      project: { id: "test" },
+      directory: dir,
+      worktree: dir,
+      $: {},
+      serverUrl: new URL("http://localhost:3000"),
+      experimental_workspace: { register: () => {} },
+    })
+
+    await hooks["command.execute.before"](
+      { command: "loop", arguments: "list", sessionID: "sA" },
+      { parts: [] }
+    )
+
+    assert.equal(logCalls.length, 2)
+    assert.equal(logCalls[1].body.level, "warn")
+    assert.equal(logCalls[1].body.message, "failed to show loop command result")
+    assert.equal(logCalls[1].body.extra.error, "toast unavailable")
   } finally {
     if (hooks) await hooks.dispose()
     rmSync(dir, { recursive: true })

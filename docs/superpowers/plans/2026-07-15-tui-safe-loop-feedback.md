@@ -141,7 +141,7 @@ Expected: PASS with zero failing tests and no console output.
 - [ ] **Step 6: Commit Task 1**
 
 ```bash
-git add src/runtime-feedback.ts src/index.ts tests/integration.test.mjs dist
+git add src/runtime-feedback.ts src/index.ts tests/integration.test.mjs
 git commit -m "fix: render loop feedback through OpenCode TUI"
 ```
 
@@ -187,7 +187,7 @@ Expected: tests PASS; `rg` exits 1 with no matches.
 - [ ] **Step 5: Commit Task 2**
 
 ```bash
-git add src/store.ts src/index.ts tests/store.test.mjs dist
+git add src/store.ts src/index.ts tests/store.test.mjs
 git commit -m "fix: route loop runtime diagnostics to app log"
 ```
 
@@ -199,7 +199,7 @@ git commit -m "fix: route loop runtime diagnostics to app log"
 - Modify: `README.md`
 - Modify: `package.json`
 - Modify: `package-lock.json`
-- Modify: `dist/**`
+- Generate for packaging (gitignored): `dist/**`
 
 **Interfaces:**
 - Produces: npm package `opencode-plugin-loop@0.2.4`.
@@ -230,7 +230,7 @@ Expected: `package.json` and `package-lock.json` both report `0.2.4`.
 
 Run: `npm run build`
 
-Expected: exit 0 and `dist/runtime-feedback.js` plus declarations are generated.
+Expected: exit 0 and ignored `dist/runtime-feedback.js` plus declarations are generated for packaging.
 
 - [ ] **Step 5: Run full automated verification**
 
@@ -245,7 +245,7 @@ Expected: all tests pass, TypeScript exits 0, and dry-run lists only intended pa
 - [ ] **Step 6: Commit Task 3**
 
 ```bash
-git add README.md package.json package-lock.json dist
+git add README.md package.json package-lock.json
 git commit -m "chore: prepare 0.2.4 release"
 ```
 
