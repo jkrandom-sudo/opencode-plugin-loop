@@ -226,7 +226,7 @@ Run: `npm version 0.2.4 --no-git-tag-version`
 
 Expected: `package.json` and `package-lock.json` both report `0.2.4`.
 
-- [ ] **Step 4: Build committed distribution files**
+- [ ] **Step 4: Build generated distribution files**
 
 Run: `npm run build`
 

@@ -186,6 +186,14 @@ Tasks persist to `.opencode/cache/loop/tasks.json` (per project). Fire history i
 
 ## Troubleshooting
 
+### Programmatic default import in 0.2.4
+
+Version 0.2.4 changes the package default export to OpenCode's v1-compatible plugin module object (`{ id, server }`). This prevents OpenCode from treating public factory exports as separate plugins. Programmatic consumers that previously called the default export should use the named function instead:
+
+```typescript
+import { LoopPlugin } from "opencode-plugin-loop"
+```
+
 ### Task lines overlap the input area
 
 Versions before 0.2.4 wrote `/loop` results directly to the terminal. OpenCode owns and redraws the terminal UI, so those writes could leave task IDs and prompts over the input area. Upgrade to 0.2.4 or newer; command results are shown through OpenCode's TUI notifications and runtime diagnostics go to the structured application log.
