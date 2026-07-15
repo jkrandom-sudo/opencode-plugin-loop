@@ -184,6 +184,29 @@ Each `/loop` task carries a `sessionID` field:
 
 Tasks persist to `.opencode/cache/loop/tasks.json` (per project). Fire history is logged to `history.log` next to the store.
 
+## Troubleshooting
+
+### Task lines overlap the input area
+
+Versions before 0.2.4 wrote `/loop` results directly to the terminal. OpenCode owns and redraws the terminal UI, so those writes could leave task IDs and prompts over the input area. Upgrade to 0.2.4 or newer; command results are shown through OpenCode's TUI notifications and runtime diagnostics go to the structured application log.
+
+Also make sure the plugin is installed from only one source. OpenCode loads npm plugins from `opencode.json` and copied plugins under `~/.config/opencode/plugins/` independently, even when they have the same package name.
+
+If `opencode.json` already contains `"plugin": ["opencode-plugin-loop"]`, check for a stale copied installation:
+
+```bash
+ls ~/.config/opencode/plugins/opencode-plugin-loop
+```
+
+If that directory exists, move it out of the auto-loaded plugin directory and restart OpenCode:
+
+```bash
+mv ~/.config/opencode/plugins/opencode-plugin-loop \
+  ~/.config/opencode/plugins/opencode-plugin-loop.backup
+```
+
+Keep the backup until the npm installation has been verified, then remove it when no longer needed.
+
 ## License
 
 MIT
