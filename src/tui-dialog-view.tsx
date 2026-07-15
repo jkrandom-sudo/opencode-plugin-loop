@@ -96,10 +96,14 @@ export function LoopFeedbackDialog(props: LoopFeedbackDialogProps): JSX.Element 
 
   return (
     <box
+      width="100%"
+      height={rows().maxHeight}
+      minHeight={rows().maxHeight}
       maxHeight={rows().maxHeight}
       flexDirection="column"
+      flexShrink={0}
       gap={1}
-      paddingBottom={1}
+      overflow="hidden"
     >
       <box
         paddingLeft={3}
@@ -117,7 +121,10 @@ export function LoopFeedbackDialog(props: LoopFeedbackDialogProps): JSX.Element 
       <Show when={rows().messageRows > 0}>
         <scrollbox
           ref={(value: ScrollBoxRenderable) => (messageScroll = value)}
+          height={rows().messageRows}
+          minHeight={rows().messageRows}
           maxHeight={rows().messageRows}
+          flexShrink={0}
           paddingLeft={3}
           paddingRight={3}
           scrollbarOptions={{ visible: true }}
@@ -129,7 +136,10 @@ export function LoopFeedbackDialog(props: LoopFeedbackDialogProps): JSX.Element 
       <Show when={rows().actionRows > 0}>
         <scrollbox
           ref={(value: ScrollBoxRenderable) => (actionScroll = value)}
+          height={rows().actionRows}
+          minHeight={rows().actionRows}
           maxHeight={rows().actionRows}
+          flexShrink={0}
           paddingLeft={1}
           paddingRight={1}
           scrollbarOptions={{ visible: false }}

@@ -36,16 +36,13 @@ export interface LoopTuiDependencies {
 const defaultDependencies: Required<LoopTuiDependencies> = {
   writeClipboard: (text) => clipboardy.write(text),
   renderDialog(input) {
-    return input.api.ui.Dialog({
-      onClose: input.close,
-      children: LoopFeedbackDialog({
-        message: input.message,
-        variant: input.variant,
-        actions: input.actions,
-        theme: input.theme,
-        onActivate: input.onActivate,
-        ref: input.ref,
-      }),
+    return LoopFeedbackDialog({
+      message: input.message,
+      variant: input.variant,
+      actions: input.actions,
+      theme: input.theme,
+      onActivate: input.onActivate,
+      ref: input.ref,
     })
   },
 }
