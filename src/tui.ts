@@ -1,10 +1,21 @@
 import type {
-  TuiDialogSelectOption,
   TuiPlugin,
+  TuiPluginApi,
   TuiPluginModule,
 } from "@opencode-ai/plugin/tui"
+import type { JSX } from "@opentui/solid"
 import clipboardy from "clipboardy"
 
+import {
+  createLoopActionRunner,
+  createLoopDialogActions,
+  type LoopDialogAction,
+} from "./tui-dialog-actions.js"
+import {
+  LoopFeedbackDialog,
+  type LoopFeedbackDialogProps,
+  type LoopFeedbackDialogRef,
+} from "./tui-dialog-view.js"
 import {
   LOOP_COPY_TITLE,
   createLoopFeedbackModel,
@@ -12,24 +23,45 @@ import {
   type LoopFeedbackInput,
 } from "./tui-feedback-model.js"
 
-type LoopDialogAction =
-  | { type: "copy-id"; taskId: string }
-  | { type: "copy-all" }
-  | { type: "close" }
+export interface LoopDialogRenderInput extends LoopFeedbackDialogProps {
+  api: TuiPluginApi
+  close(): void
+}
 
 export interface LoopTuiDependencies {
   writeClipboard(text: string): Promise<void>
+  renderDialog?(input: LoopDialogRenderInput): JSX.Element
 }
 
-const defaultDependencies: LoopTuiDependencies = {
+const defaultDependencies: Required<LoopTuiDependencies> = {
   writeClipboard: (text) => clipboardy.write(text),
+  renderDialog(input) {
+    return input.api.ui.Dialog({
+      onClose: input.close,
+      children: LoopFeedbackDialog({
+        message: input.message,
+        variant: input.variant,
+        actions: input.actions,
+        theme: input.theme,
+        onActivate: input.onActivate,
+        ref: input.ref,
+      }),
+    })
+  },
 }
 
 export function createLoopTuiPlugin(
-  dependencies: LoopTuiDependencies = defaultDependencies
+  input: LoopTuiDependencies = defaultDependencies
 ): TuiPlugin {
+  const dependencies: Required<LoopTuiDependencies> = {
+    ...defaultDependencies,
+    ...input,
+  }
+
   return async (api) => {
-    let ownsDialog = false
+    let latestGeneration = 0
+    let ownedGeneration: number | undefined
+    let dialogRef: LoopFeedbackDialogRef | undefined
     let unregisterCloseLayer: (() => void) | undefined
 
     const releaseCloseLayer = () => {
@@ -40,6 +72,28 @@ export function createLoopTuiPlugin(
       } catch {
         // Cleanup must not interrupt later Loop feedback or TUI disposal.
       }
+    }
+
+    const finishGeneration = (generation: number) => {
+      if (ownedGeneration !== generation) return
+      ownedGeneration = undefined
+      dialogRef?.dispose()
+      dialogRef = undefined
+      releaseCloseLayer()
+    }
+
+    const closeGeneration = (generation: number) => {
+      if (ownedGeneration !== generation) return
+      try {
+        api.ui.dialog.clear()
+      } finally {
+        finishGeneration(generation)
+      }
+    }
+
+    const close = () => {
+      const generation = ownedGeneration
+      if (generation !== undefined) closeGeneration(generation)
     }
 
     const logDialogFailure = (error: unknown) => {
@@ -58,39 +112,74 @@ export function createLoopTuiPlugin(
       }
     }
 
-    const close = () => {
-      if (ownsDialog) api.ui.dialog.clear()
+    const notifySuccess = (description: string) => {
+      api.ui.toast({
+        title: LOOP_COPY_TITLE,
+        message: `${description} copied to clipboard.`,
+        variant: "success",
+        duration: 2500,
+      })
     }
 
-    const copy = async (text: string, description: string) => {
-      try {
-        await dependencies.writeClipboard(text)
-        api.ui.toast({
-          title: LOOP_COPY_TITLE,
-          message: `${description} copied to clipboard.`,
-          variant: "success",
-          duration: 2500,
-        })
-      } catch {
-        api.ui.toast({
-          title: LOOP_COPY_TITLE,
-          message: "Could not copy to the system clipboard.",
-          variant: "error",
-          duration: 4000,
-        })
-      }
+    const notifyFailure = () => {
+      api.ui.toast({
+        title: LOOP_COPY_TITLE,
+        message: "Could not copy to the system clipboard.",
+        variant: "error",
+        duration: 4000,
+      })
     }
 
-    const openFeedback = (input: LoopFeedbackInput) => {
-      try {
-        const model = createLoopFeedbackModel(input)
+    const openFeedback = (feedback: LoopFeedbackInput) => {
+      const generation = ++latestGeneration
 
-        if (ownsDialog) api.ui.dialog.clear()
+      try {
+        const model = createLoopFeedbackModel(feedback)
+
+        if (ownedGeneration !== undefined) closeGeneration(ownedGeneration)
         releaseCloseLayer()
+
+        const actions = createLoopDialogActions(model.taskIds)
+        const runner = createLoopActionRunner({
+          writeClipboard: dependencies.writeClipboard,
+          notifySuccess,
+          notifyFailure,
+          closeIfCurrent: () => closeGeneration(generation),
+        })
 
         unregisterCloseLayer = api.keymap.registerLayer({
           priority: 1000,
           commands: [
+            {
+              name: "loop.dialog.previous",
+              title: "Previous Loop action",
+              category: "Loop",
+              run: () => dialogRef?.move(-1),
+            },
+            {
+              name: "loop.dialog.next",
+              title: "Next Loop action",
+              category: "Loop",
+              run: () => dialogRef?.move(1),
+            },
+            {
+              name: "loop.dialog.activate",
+              title: "Activate Loop action",
+              category: "Loop",
+              run: () => dialogRef?.activate(),
+            },
+            {
+              name: "loop.dialog.page-up",
+              title: "Scroll Loop message up",
+              category: "Loop",
+              run: () => dialogRef?.pageMessage(-1),
+            },
+            {
+              name: "loop.dialog.page-down",
+              title: "Scroll Loop message down",
+              category: "Loop",
+              run: () => dialogRef?.pageMessage(1),
+            },
             {
               name: "loop.dialog.close",
               title: "Close Loop feedback",
@@ -99,74 +188,48 @@ export function createLoopTuiPlugin(
             },
           ],
           bindings: [
-            {
-              key: "q",
-              cmd: "loop.dialog.close",
-              desc: "Close Loop feedback",
-            },
+            { key: "up", cmd: "loop.dialog.previous", desc: "Previous action" },
+            { key: "down", cmd: "loop.dialog.next", desc: "Next action" },
+            { key: "enter", cmd: "loop.dialog.activate", desc: "Activate action" },
+            { key: "return", cmd: "loop.dialog.activate", desc: "Activate action" },
+            { key: "space", cmd: "loop.dialog.activate", desc: "Activate action" },
+            { key: "pageup", cmd: "loop.dialog.page-up", desc: "Scroll message up" },
+            { key: "pagedown", cmd: "loop.dialog.page-down", desc: "Scroll message down" },
+            { key: "q", cmd: "loop.dialog.close", desc: "Close Loop feedback" },
           ],
         })
 
-        const options: TuiDialogSelectOption<LoopDialogAction>[] = [
-          ...model.taskIds.map((taskId) => ({
-            title: `Copy ID: ${taskId}`,
-            description: "Copy this task ID",
-            value: { type: "copy-id" as const, taskId },
-          })),
-          {
-            title: "Copy all",
-            description: "Copy the complete Loop result",
-            value: { type: "copy-all" },
-          },
-          {
-            title: "Close",
-            description: "Close this Loop result",
-            value: { type: "close" },
-          },
-        ]
-
-        const status = {
-          info: "ℹ",
-          success: "✓",
-          warning: "⚠",
-          error: "✕",
-        }[model.variant]
-
-        ownsDialog = true
+        ownedGeneration = generation
+        api.ui.dialog.setSize("medium")
         api.ui.dialog.replace(
           () =>
-            api.ui.DialogSelect<LoopDialogAction>({
-              title: `${status} Loop\n\n${model.message}`,
-              options,
-              skipFilter: true,
-              onSelect(option) {
-                const action = option.value
-                if (action.type === "close") {
-                  close()
-                  return
-                }
-                if (action.type === "copy-all") {
-                  void copy(model.message, "Loop result")
-                  return
-                }
-                void copy(action.taskId, `Task ID ${action.taskId}`)
+            dependencies.renderDialog({
+              api,
+              message: model.message,
+              variant: model.variant,
+              actions,
+              theme: api.theme.current,
+              onActivate(action: LoopDialogAction) {
+                void runner.run(action, model.message)
               },
+              ref(value) {
+                if (ownedGeneration === generation) dialogRef = value
+              },
+              close: () => closeGeneration(generation),
             }),
-          () => {
-            ownsDialog = false
-            releaseCloseLayer()
-          }
+          () => finishGeneration(generation)
         )
       } catch (error) {
-        if (ownsDialog) {
+        if (ownedGeneration === generation) {
           try {
             api.ui.dialog.clear()
           } catch {
             // Continue with local state cleanup and structured diagnostics.
           }
+          finishGeneration(generation)
+        } else {
+          releaseCloseLayer()
         }
-        ownsDialog = false
-        releaseCloseLayer()
         logDialogFailure(error)
       }
     }
@@ -178,7 +241,7 @@ export function createLoopTuiPlugin(
 
     api.lifecycle.onDispose(() => {
       unsubscribe()
-      if (ownsDialog) api.ui.dialog.clear()
+      close()
       releaseCloseLayer()
     })
   }
