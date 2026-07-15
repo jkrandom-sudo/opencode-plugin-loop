@@ -21,43 +21,50 @@ A drop-in `/loop` command for [opencode](https://opencode.ai), modeled after Cla
 - **Auto-expire** — tasks older than 7 days are removed on load
 - **Max 50 concurrent tasks**
 - **LLM-callable tools** — `loop_schedule`, `loop_status` (session-bound by default)
+- **Interactive Loop results** — `/loop` results open in a dedicated native dialog instead of writing over the prompt
+- **Clipboard actions** — copy the complete result or copy any displayed task ID with one action
+- **Easy dismissal** — choose **Close**, press `q`, or use the native dialog's `Esc` key
+
+## Requirements
+
+- OpenCode **1.17.18 or newer** for the interactive TUI companion
+- Node.js **18 or newer**
+
+The scheduling server plugin still has a native toast fallback, but both interactive entrypoints are installed automatically on supported OpenCode versions.
 
 ## Install
 
 ### Option 1: From npm (recommended)
 
-Pick one of the two paths below — they do the same thing.
-
-**a) One-shot via the opencode CLI** (auto-edits your `opencode.json`):
+Use OpenCode's plugin installer so the package's server and TUI entrypoints are both detected and added to the correct configs:
 
 ```bash
-opencode plugin install opencode-plugin-loop
+opencode plugin opencode-plugin-loop@0.2.5 --global --force
 ```
 
-**b) Manual edit** — add to your `opencode.json`:
+This pins version 0.2.5 and updates both global `opencode.json` and `tui.json`. The bundled `/loop` command is installed with the package.
+
+To upgrade after a newer version is released, replace `0.2.5` in the command with the target version and run it again with `--force`.
+
+### Option 2: Manual configuration
+
+Add the same pinned package to the `plugin` array in both configuration files.
+
+Server config (`~/.config/opencode/opencode.json`):
 
 ```json
 {
-  "plugin": ["opencode-plugin-loop"]
+  "plugin": ["opencode-plugin-loop@0.2.5"]
 }
 ```
 
-Both paths register the plugin globally. The bundled `/loop` command is auto-installed at `~/.config/opencode/commands/loop.md`.
+TUI config (`~/.config/opencode/tui.json`):
 
-To upgrade later:
-
-```bash
-npm update -g opencode-plugin-loop
-# or, if you used the CLI install
-opencode plugin install opencode-plugin-loop   # re-run to refresh
-```
-
-### Option 2: From a specific npm version
-
-```bash
-opencode plugin install opencode-plugin-loop@0.2.0
-# or, with explicit registry access
-npm install -g opencode-plugin-loop@0.2.0
+```json
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": ["opencode-plugin-loop@0.2.5"]
+}
 ```
 
 ### Option 3: From source (development)
@@ -67,18 +74,10 @@ git clone https://github.com/jkrandom-sudo/opencode-plugin-loop.git
 cd opencode-plugin-loop
 npm install
 npm run build
-npm link                                # exposes package globally as `opencode-plugin-loop`
+opencode plugin "file:///absolute/path/to/opencode-plugin-loop" --global --force
 ```
 
-Then in `opencode.json`:
-
-```json
-{
-  "plugin": ["opencode-plugin-loop"]
-}
-```
-
-Re-run `npm run build` after editing `src/`. Use `npm run deploy` (if defined) to sync to `~/.config/opencode/plugins/opencode-plugin-loop/`.
+Re-run `npm run build` after editing `src/`, then restart OpenCode to load the rebuilt file plugin.
 
 ## Usage
 
@@ -121,6 +120,16 @@ All subcommands are **session-scoped by default**. Add `--all` to operate across
 ```
 
 If you try `cancel <id>` for a task owned by another session, you'll get a refusal with a hint to add `--all`. The same strict scoping applies to `loop_schedule` and `loop_status` tools.
+
+### Interactive result dialog
+
+Every `/loop` command result opens in a separate native OpenCode dialog. It keeps task output away from the prompt and provides:
+
+- **Copy ID: `<taskId>`** for every distinct task shown in the result
+- **Copy all** for the exact complete result text
+- **Close** to dismiss the dialog
+
+Use the mouse or arrow keys to select an action, then press `Enter` or `Space`. Press `q` or `Esc` to close. A newer Loop result replaces the previous Loop dialog rather than stacking another one.
 
 ### Programmatic (LLM tools)
 
@@ -186,9 +195,9 @@ Tasks persist to `.opencode/cache/loop/tasks.json` (per project). Fire history i
 
 ## Troubleshooting
 
-### Programmatic default import in 0.2.4
+### Package entrypoints in 0.2.5
 
-Version 0.2.4 changes the package default export to OpenCode's v1-compatible plugin module object (`{ id, server }`). This prevents OpenCode from treating public factory exports as separate plugins. Programmatic consumers that previously called the default export should use the named function instead:
+Version 0.2.5 exposes separate `opencode-plugin-loop/server` and `opencode-plugin-loop/tui` entrypoints so OpenCode can load the scheduler and interactive dialog independently. The root export remains the v1-compatible server module for backward compatibility. Programmatic consumers should use the named factory:
 
 ```typescript
 import { LoopPlugin } from "opencode-plugin-loop"
@@ -196,7 +205,7 @@ import { LoopPlugin } from "opencode-plugin-loop"
 
 ### Task lines overlap the input area
 
-Versions before 0.2.4 wrote `/loop` results directly to the terminal. OpenCode owns and redraws the terminal UI, so those writes could leave task IDs and prompts over the input area. Upgrade to 0.2.4 or newer; command results are shown through OpenCode's TUI notifications and runtime diagnostics go to the structured application log.
+Versions before 0.2.4 wrote `/loop` results directly to the terminal. OpenCode owns and redraws the terminal UI, so those writes could leave task IDs and prompts over the input area. Upgrade to 0.2.5 for the dedicated interactive dialog; runtime diagnostics go to OpenCode's structured application log.
 
 Also make sure the plugin is installed from only one source. OpenCode loads npm plugins from `opencode.json` and copied plugins under `~/.config/opencode/plugins/` independently, even when they have the same package name.
 
