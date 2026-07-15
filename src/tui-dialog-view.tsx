@@ -149,6 +149,11 @@ export function LoopFeedbackDialog(props: LoopFeedbackDialogProps): JSX.Element 
               const active = () => selected() === index()
               return (
                 <box
+                  height={1}
+                  minHeight={1}
+                  maxHeight={1}
+                  flexShrink={0}
+                  overflow="hidden"
                   paddingLeft={2}
                   paddingRight={2}
                   flexDirection="row"
@@ -160,6 +165,9 @@ export function LoopFeedbackDialog(props: LoopFeedbackDialogProps): JSX.Element 
                   onMouseUp={() => void props.onActivate(action)}
                 >
                   <text
+                    wrapMode="none"
+                    truncate={true}
+                    flexShrink={0}
                     fg={
                       active()
                         ? props.theme.selectedListItemText
@@ -170,6 +178,9 @@ export function LoopFeedbackDialog(props: LoopFeedbackDialogProps): JSX.Element 
                     {label(action)}
                   </text>
                   <text
+                    wrapMode="none"
+                    truncate={true}
+                    flexShrink={1}
                     fg={
                       active()
                         ? props.theme.selectedListItemText
