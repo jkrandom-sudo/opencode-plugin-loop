@@ -18,7 +18,8 @@ const pluginModule = await import("../dist/index.js")
 
 test("plugin module exports LoopPlugin", () => {
   assert.ok(pluginModule.LoopPlugin, "should export LoopPlugin")
-  assert.ok(pluginModule.default, "should have default export")
+  assert.equal(pluginModule.default.id, "opencode-plugin-loop")
+  assert.equal(pluginModule.default.server, pluginModule.LoopPlugin)
   assert.ok(pluginModule.LoopStore, "should export LoopStore")
   assert.ok(pluginModule.CronParser, "should export CronParser")
   assert.ok(pluginModule.Jitter, "should export Jitter")

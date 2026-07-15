@@ -194,6 +194,8 @@ git commit -m "fix: route loop runtime diagnostics to app log"
 ### Task 3: Documentation, package version, and release artifacts
 
 **Files:**
+- Modify: `src/index.ts`
+- Modify: `tests/integration.test.mjs`
 - Modify: `README.md`
 - Modify: `package.json`
 - Modify: `package-lock.json`
@@ -201,26 +203,36 @@ git commit -m "fix: route loop runtime diagnostics to app log"
 
 **Interfaces:**
 - Produces: npm package `opencode-plugin-loop@0.2.4`.
+- Produces: OpenCode v1-compatible default export `{ id, server }` while
+  retaining named `LoopPlugin` and public factory exports.
 
-- [ ] **Step 1: Add duplicate-install troubleshooting guidance**
+- [ ] **Step 1: Add the npm loader compatibility regression**
+
+Assert the module default export has `id === "opencode-plugin-loop"` and
+`server === LoopPlugin`. Verify the test fails while the default export is the
+legacy bare function. Change the default export to a `PluginModule` object so
+OpenCode does not enter legacy mode and invoke every public factory export as a
+plugin.
+
+- [ ] **Step 2: Add duplicate-install troubleshooting guidance**
 
 Document that npm configuration and `~/.config/opencode/plugins/opencode-plugin-loop`
 are loaded independently, so users should keep one installation source. Include
 commands to remove the copied directory only after verifying npm configuration.
 
-- [ ] **Step 2: Bump version without creating a tag**
+- [ ] **Step 3: Bump version without creating a tag**
 
 Run: `npm version 0.2.4 --no-git-tag-version`
 
 Expected: `package.json` and `package-lock.json` both report `0.2.4`.
 
-- [ ] **Step 3: Build committed distribution files**
+- [ ] **Step 4: Build committed distribution files**
 
 Run: `npm run build`
 
 Expected: exit 0 and `dist/runtime-feedback.js` plus declarations are generated.
 
-- [ ] **Step 4: Run full automated verification**
+- [ ] **Step 5: Run full automated verification**
 
 Run: `npm test`
 
@@ -230,7 +242,7 @@ Run: `npm publish --dry-run`
 
 Expected: all tests pass, TypeScript exits 0, and dry-run lists only intended package files for version `0.2.4`.
 
-- [ ] **Step 5: Commit Task 3**
+- [ ] **Step 6: Commit Task 3**
 
 ```bash
 git add README.md package.json package-lock.json dist

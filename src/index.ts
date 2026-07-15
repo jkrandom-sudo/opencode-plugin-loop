@@ -23,7 +23,7 @@
  *   - On load, tasks without sessionID (legacy) are cleaned up
  */
 
-import type { Plugin, Hooks } from "@opencode-ai/plugin"
+import type { Plugin, Hooks, PluginModule } from "@opencode-ai/plugin"
 import { LoopStore } from "./store.js"
 import { Scheduler } from "./scheduler.js"
 import { CronParser } from "./cron-parser.js"
@@ -162,10 +162,14 @@ export const LoopPlugin: Plugin = async (ctx) => {
   return hooks
 }
 
-// Export both bare plugin function and {server: plugin} wrapper.
-// opencode's plugin loader is picky about which format it accepts.
-export default LoopPlugin
-export const plugin = { server: LoopPlugin }
+// OpenCode v1 detects the default {id, server} object before its legacy loader
+// scans every named export. Keeping the factories below as named exports is
+// therefore safe while preserving the package's public composition API.
+export const plugin: PluginModule = {
+  id: "opencode-plugin-loop",
+  server: LoopPlugin,
+}
+export default plugin
 
 // ---- Public API exports (for users who want to compose) ----
 export { LoopStore } from "./store.js"
