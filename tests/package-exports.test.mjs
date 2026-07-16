@@ -13,8 +13,8 @@ const builtDialogView = await readFile(
   "utf8",
 )
 
-test("publishes the interactive navigation release", () => {
-  assert.equal(packageJson.version, "0.2.8")
+test("publishes the reactive dialog release", () => {
+  assert.equal(packageJson.version, "0.2.9")
 })
 
 test("publishes explicit server and TUI plugin entrypoints", () => {
