@@ -54,7 +54,7 @@
     "opencode": ">=1.17.18"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/build.mjs",
     "prepare": "npm run build",
     "test": "npm run build && node --test tests/*.test.mjs",
     "dry-run": "npm publish --dry-run",
@@ -67,10 +67,13 @@
     "solid-js": "1.9.12"
   },
   "devDependencies": {
+    "@babel/core": "^7.28.0",
+    "@babel/preset-typescript": "^7.27.1",
     "@opencode-ai/plugin": "^1.17.18",
     "@opentui/core": "0.4.3",
     "@opentui/solid": "0.4.3",
     "@types/node": "^22.0.0",
+    "babel-preset-solid": "^1.9.12",
     "solid-js": "1.9.12",
     "typescript": "^5.4.0"
   },

@@ -5,6 +5,13 @@ import test from "node:test"
 const packageJson = JSON.parse(
   await readFile(new URL("../package.json", import.meta.url), "utf8"),
 )
+const tsconfig = JSON.parse(
+  await readFile(new URL("../tsconfig.json", import.meta.url), "utf8"),
+)
+const builtDialogView = await readFile(
+  new URL("../dist/tui-dialog-view.js", import.meta.url),
+  "utf8",
+)
 
 test("publishes the interactive navigation release", () => {
   assert.equal(packageJson.version, "0.2.8")
@@ -45,4 +52,24 @@ test("declares the host TUI peers used by the responsive dialog", () => {
 
 test("test command always builds fresh output before running tests", () => {
   assert.match(packageJson.scripts.test, /^npm run build && /)
+})
+
+test("preserves TSX for the OpenTUI Solid compiler", () => {
+  assert.equal(tsconfig.compilerOptions.jsx, "preserve")
+})
+
+test("builds JavaScript through the Solid-aware build script", () => {
+  assert.equal(packageJson.scripts.build, "node scripts/build.mjs")
+})
+
+test("emits reactive Solid updates for selected dialog rows", () => {
+  assert.doesNotMatch(builtDialogView, /@opentui\/solid\/jsx-runtime/)
+  assert.match(
+    builtDialogView,
+    /import \{ effect as \S+ \} from ["']@opentui\/solid["']/,
+  )
+  assert.match(
+    builtDialogView,
+    /setProp\([^\n]+["']backgroundColor["'][^\n]+\)/,
+  )
 })
