@@ -1,21 +1,19 @@
 /** @jsxImportSource @opentui/solid */
 import { RGBA, TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
-import { useTerminalDimensions, type JSX } from "@opentui/solid"
+import { useKeyboard, useTerminalDimensions, type JSX } from "@opentui/solid"
 import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js"
 import type { TuiThemeCurrent } from "@opencode-ai/plugin/tui"
 
 import type { LoopDialogAction } from "./tui-dialog-actions.js"
 import {
+  createLoopDialogPointerHandlers,
+  handleLoopDialogKey,
+  type LoopDialogInteractionController,
+} from "./tui-dialog-interaction.js"
+import {
   allocateLoopDialogRows,
   moveLoopActionIndex,
 } from "./tui-dialog-layout.js"
-
-export interface LoopFeedbackDialogRef {
-  move(delta: number): void
-  activate(): void
-  pageMessage(delta: number): void
-  dispose(): void
-}
 
 export interface LoopFeedbackDialogProps {
   message: string
@@ -23,7 +21,7 @@ export interface LoopFeedbackDialogProps {
   actions: readonly LoopDialogAction[]
   theme: TuiThemeCurrent
   onActivate(action: LoopDialogAction): void | Promise<void>
-  ref?(value: LoopFeedbackDialogRef | undefined): void
+  onClose(): void
 }
 
 const transparent = RGBA.fromInts(0, 0, 0, 0)
@@ -48,6 +46,8 @@ export function LoopFeedbackDialog(props: LoopFeedbackDialogProps): JSX.Element 
   )
   let messageScroll: ScrollBoxRenderable | undefined
   let actionScroll: ScrollBoxRenderable | undefined
+  let keyboardReady = false
+  let mounted = true
 
   const keepSelectedVisible = () => {
     const scroll = actionScroll
@@ -59,34 +59,50 @@ export function LoopFeedbackDialog(props: LoopFeedbackDialogProps): JSX.Element 
     if (offset >= scroll.height) scroll.scrollBy(offset - scroll.height + 1)
   }
 
-  const controller: LoopFeedbackDialogRef = {
+  const controller: LoopDialogInteractionController = {
     move(delta) {
       setSelected((index) =>
         moveLoopActionIndex(index, delta, props.actions.length)
       )
     },
+    select(index) {
+      if (index < 0 || index >= props.actions.length) return
+      setSelected(index)
+    },
     activate() {
       const action = props.actions[selected()]
       if (action) void props.onActivate(action)
+    },
+    activateAt(index) {
+      const action = props.actions[index]
+      if (!action) return
+      setSelected(index)
+      void props.onActivate(action)
     },
     pageMessage(delta) {
       if (!messageScroll) return
       messageScroll.scrollBy(delta * Math.max(1, messageScroll.height - 1))
     },
-    dispose() {
-      messageScroll = undefined
-      actionScroll = undefined
+    close() {
+      props.onClose()
     },
   }
 
-  props.ref?.(controller)
+  useKeyboard((event) => {
+    handleLoopDialogKey(event, controller, keyboardReady)
+  })
+  queueMicrotask(() => {
+    if (mounted) keyboardReady = true
+  })
   createEffect(() => {
     selected()
     queueMicrotask(keepSelectedVisible)
   })
   onCleanup(() => {
-    controller.dispose()
-    props.ref?.(undefined)
+    mounted = false
+    keyboardReady = false
+    messageScroll = undefined
+    actionScroll = undefined
   })
 
   const icon = () =>
@@ -147,6 +163,10 @@ export function LoopFeedbackDialog(props: LoopFeedbackDialogProps): JSX.Element 
           <For each={props.actions}>
             {(action, index) => {
               const active = () => selected() === index()
+              const pointer = createLoopDialogPointerHandlers(
+                index(),
+                controller
+              )
               return (
                 <box
                   height={1}
@@ -161,8 +181,9 @@ export function LoopFeedbackDialog(props: LoopFeedbackDialogProps): JSX.Element 
                   backgroundColor={
                     active() ? props.theme.primary : transparent
                   }
-                  onMouseDown={() => setSelected(index())}
-                  onMouseUp={() => void props.onActivate(action)}
+                  onMouseOver={pointer.onMouseOver}
+                  onMouseDown={pointer.onMouseDown}
+                  onMouseUp={pointer.onMouseUp}
                 >
                   <text
                     wrapMode="none"

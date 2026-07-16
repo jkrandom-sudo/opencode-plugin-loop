@@ -23,6 +23,7 @@ A drop-in `/loop` command for [opencode](https://opencode.ai), modeled after Cla
 - **LLM-callable tools** — `loop_schedule`, `loop_status` (session-bound by default)
 - **Interactive Loop results** — `/loop` results open in a dedicated native dialog instead of writing over the prompt
 - **Clipboard actions** — copy the complete result or copy any displayed task ID with one action
+- **Keyboard and mouse navigation** — move with `Up`/`Down` or `Tab`/`Shift+Tab`, hover with the pointer, and activate with `Enter`, `Space`, or a click
 - **Responsive layout** — short or narrow terminals keep the dialog inside the viewport with independently scrollable result and action areas
 - **Easy dismissal** — choose **Close**, press `q`, or use the native dialog's `Esc` key
 
@@ -147,7 +148,7 @@ Every `/loop` command result opens in a separate native OpenCode dialog. It keep
 - **Copy all** for the exact complete result text
 - **Close** to dismiss the dialog
 
-Use the mouse or arrow keys to select an action, then press `Enter` or `Space`. A successful **Copy ID** or **Copy all** action shows a confirmation and closes the dialog immediately; if clipboard access fails, the dialog stays open and shows an error. Press `Page Up` or `Page Down` to scroll long result text, or press `q` or `Esc` to close. In short or narrow terminals, the dialog scales to the available viewport and keeps the result and action lists independently scrollable. A newer Loop result replaces the previous Loop dialog rather than stacking another one.
+Use `Up`/`Down` or `Tab`/`Shift+Tab` to change the selected action, then press `Enter` or `Space` to activate it. Moving the mouse over a row selects it, and clicking activates that exact row. A successful **Copy ID** or **Copy all** action shows a confirmation and closes the dialog immediately; if clipboard access fails, the dialog stays open and shows an error. Press `Page Up` or `Page Down` to scroll long result text, or press `q` or `Esc` to close. In short or narrow terminals, the dialog scales to the available viewport and keeps the result and action lists independently scrollable. A newer Loop result replaces the previous Loop dialog rather than stacking another one.
 
 ### Programmatic (LLM tools)
 
@@ -213,9 +214,9 @@ Tasks persist to `.opencode/cache/loop/tasks.json` (per project). Fire history i
 
 ## Troubleshooting
 
-### Package entrypoints in 0.2.6
+### Package entrypoints
 
-Version 0.2.6 exposes separate `opencode-plugin-loop/server` and `opencode-plugin-loop/tui` entrypoints so OpenCode can load the scheduler and responsive interactive dialog independently. The root export remains the v1-compatible server module for backward compatibility. Programmatic consumers should use the named factory:
+Current releases expose separate `opencode-plugin-loop/server` and `opencode-plugin-loop/tui` entrypoints so OpenCode can load the scheduler and responsive interactive dialog independently. The root export remains the v1-compatible server module for backward compatibility. Programmatic consumers should use the named factory:
 
 ```typescript
 import { LoopPlugin } from "opencode-plugin-loop"
@@ -223,7 +224,7 @@ import { LoopPlugin } from "opencode-plugin-loop"
 
 ### Task lines overlap the input area
 
-Versions before 0.2.4 wrote `/loop` results directly to the terminal. OpenCode owns and redraws the terminal UI, so those writes could leave task IDs and prompts over the input area. Upgrade to 0.2.6 for the responsive interactive dialog; runtime diagnostics go to OpenCode's structured application log.
+Older releases wrote `/loop` results directly to the terminal. OpenCode owns and redraws the terminal UI, so those writes could leave task IDs and prompts over the input area. Upgrade to the current release for the responsive interactive dialog; runtime diagnostics go to OpenCode's structured application log.
 
 Also make sure the plugin is installed from only one source. OpenCode loads npm plugins from `opencode.json` and copied plugins under `~/.config/opencode/plugins/` independently, even when they have the same package name.
 

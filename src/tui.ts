@@ -14,7 +14,6 @@ import {
 import {
   LoopFeedbackDialog,
   type LoopFeedbackDialogProps,
-  type LoopFeedbackDialogRef,
 } from "./tui-dialog-view.js"
 import {
   LOOP_COPY_TITLE,
@@ -25,7 +24,6 @@ import {
 
 export interface LoopDialogRenderInput extends LoopFeedbackDialogProps {
   api: TuiPluginApi
-  close(): void
 }
 
 export interface LoopTuiDependencies {
@@ -42,7 +40,7 @@ const defaultDependencies: Required<LoopTuiDependencies> = {
       actions: input.actions,
       theme: input.theme,
       onActivate: input.onActivate,
-      ref: input.ref,
+      onClose: input.onClose,
     })
   },
 }
@@ -58,25 +56,10 @@ export function createLoopTuiPlugin(
   return async (api) => {
     let latestGeneration = 0
     let ownedGeneration: number | undefined
-    let dialogRef: LoopFeedbackDialogRef | undefined
-    let unregisterCloseLayer: (() => void) | undefined
-
-    const releaseCloseLayer = () => {
-      const unregister = unregisterCloseLayer
-      unregisterCloseLayer = undefined
-      try {
-        unregister?.()
-      } catch {
-        // Cleanup must not interrupt later Loop feedback or TUI disposal.
-      }
-    }
 
     const finishGeneration = (generation: number) => {
       if (ownedGeneration !== generation) return
       ownedGeneration = undefined
-      dialogRef?.dispose()
-      dialogRef = undefined
-      releaseCloseLayer()
     }
 
     const closeGeneration = (generation: number) => {
@@ -134,7 +117,6 @@ export function createLoopTuiPlugin(
         const model = createLoopFeedbackModel(feedback)
 
         if (ownedGeneration !== undefined) closeGeneration(ownedGeneration)
-        releaseCloseLayer()
 
         const actions = createLoopDialogActions(model.taskIds)
         const runner = createLoopActionRunner({
@@ -142,58 +124,6 @@ export function createLoopTuiPlugin(
           notifySuccess,
           notifyFailure,
           closeIfCurrent: () => closeGeneration(generation),
-        })
-
-        unregisterCloseLayer = api.keymap.registerLayer({
-          priority: 1000,
-          commands: [
-            {
-              name: "loop.dialog.previous",
-              title: "Previous Loop action",
-              category: "Loop",
-              run: () => dialogRef?.move(-1),
-            },
-            {
-              name: "loop.dialog.next",
-              title: "Next Loop action",
-              category: "Loop",
-              run: () => dialogRef?.move(1),
-            },
-            {
-              name: "loop.dialog.activate",
-              title: "Activate Loop action",
-              category: "Loop",
-              run: () => dialogRef?.activate(),
-            },
-            {
-              name: "loop.dialog.page-up",
-              title: "Scroll Loop message up",
-              category: "Loop",
-              run: () => dialogRef?.pageMessage(-1),
-            },
-            {
-              name: "loop.dialog.page-down",
-              title: "Scroll Loop message down",
-              category: "Loop",
-              run: () => dialogRef?.pageMessage(1),
-            },
-            {
-              name: "loop.dialog.close",
-              title: "Close Loop feedback",
-              category: "Loop",
-              run: close,
-            },
-          ],
-          bindings: [
-            { key: "up", cmd: "loop.dialog.previous", desc: "Previous action" },
-            { key: "down", cmd: "loop.dialog.next", desc: "Next action" },
-            { key: "enter", cmd: "loop.dialog.activate", desc: "Activate action" },
-            { key: "return", cmd: "loop.dialog.activate", desc: "Activate action" },
-            { key: "space", cmd: "loop.dialog.activate", desc: "Activate action" },
-            { key: "pageup", cmd: "loop.dialog.page-up", desc: "Scroll message up" },
-            { key: "pagedown", cmd: "loop.dialog.page-down", desc: "Scroll message down" },
-            { key: "q", cmd: "loop.dialog.close", desc: "Close Loop feedback" },
-          ],
         })
 
         ownedGeneration = generation
@@ -209,10 +139,7 @@ export function createLoopTuiPlugin(
               onActivate(action: LoopDialogAction) {
                 void runner.run(action, model.message)
               },
-              ref(value) {
-                if (ownedGeneration === generation) dialogRef = value
-              },
-              close: () => closeGeneration(generation),
+              onClose: () => closeGeneration(generation),
             }),
           () => finishGeneration(generation)
         )
@@ -224,8 +151,6 @@ export function createLoopTuiPlugin(
             // Continue with local state cleanup and structured diagnostics.
           }
           finishGeneration(generation)
-        } else {
-          releaseCloseLayer()
         }
         logDialogFailure(error)
       }
@@ -239,7 +164,6 @@ export function createLoopTuiPlugin(
     api.lifecycle.onDispose(() => {
       unsubscribe()
       close()
-      releaseCloseLayer()
     })
   }
 }
