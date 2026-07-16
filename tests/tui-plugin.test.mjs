@@ -209,16 +209,14 @@ test("replaces prior Loop feedback instead of stacking dialogs", async () => {
   await createTestLoopTuiPlugin()(api)
 
   emitLoop(api, "Loop started [id=first01]", "success")
-  const firstLayer = api.__layers.at(-1)
   emitLoop(api, "Loop started [id=second2]", "success")
 
   assert.equal(api.ui.dialog.depth, 1)
   assert.match(api.__view().message, /second2/)
-  assert.equal(firstLayer.active, false)
-  assert.equal(api.__layers.filter((layer) => layer.active).length, 1)
+  assert.equal(api.__layers.length, 0)
 })
 
-test("closes from the action or temporary q shortcut", async () => {
+test("closes from the action or mounted view callback", async () => {
   const api = createFakeApi()
   await createTestLoopTuiPlugin()(api)
 
@@ -228,51 +226,18 @@ test("closes from the action or temporary q shortcut", async () => {
   assert.equal(api.__layers.filter((layer) => layer.active).length, 0)
 
   emitLoop(api, "No loop tasks found")
-  const layer = api.__layers.findLast((candidate) => candidate.active).layer
-  layer.commands.find((command) => command.name === "loop.dialog.close").run()
+  api.__view().onClose()
   assert.equal(api.ui.dialog.open, false)
 })
 
-test("keyboard commands drive the responsive view and Enter closes after copy", async () => {
+test("mounts dialog interaction without a plugin-level keymap layer", async () => {
   const api = createFakeApi()
-  const copied = []
-  const pageDeltas = []
-  let selected = 0
-  await createTestLoopTuiPlugin({
-    writeClipboard: async (text) => copied.push(text),
-    renderDialog(props) {
-      props.ref({
-        move(delta) {
-          selected = (selected + delta + props.actions.length) % props.actions.length
-        },
-        activate() {
-          props.onActivate(props.actions[selected])
-        },
-        pageMessage(delta) {
-          pageDeltas.push(delta)
-        },
-        dispose() {},
-      })
-      return props
-    },
-  })(api)
+  await createTestLoopTuiPlugin()(api)
 
   emitLoop(api, "Loop started [id=abc123]", "success")
-  const layer = api.__layers.findLast((candidate) => candidate.active).layer
-  const run = (name) => layer.commands.find((command) => command.name === name).run()
-  assert.deepEqual(
-    layer.bindings.map((binding) => binding.key),
-    ["up", "down", "enter", "return", "space", "pageup", "pagedown", "q"],
-  )
-
-  run("loop.dialog.next")
-  run("loop.dialog.page-down")
-  run("loop.dialog.activate")
-  await settle()
-
-  assert.deepEqual(pageDeltas, [1])
-  assert.deepEqual(copied, ["Loop started [id=abc123]"])
-  assert.equal(api.ui.dialog.open, false)
+  assert.equal(api.ui.dialog.open, true)
+  assert.equal(typeof api.__view().onClose, "function")
+  assert.equal(api.__layers.length, 0)
 })
 
 test("a slow copy from a replaced dialog cannot close the current dialog", async () => {
@@ -339,23 +304,14 @@ test("cleans up and logs when dialog rendering fails, then recovers", async () =
   assert.match(api.__view().message, /second2/)
 })
 
-test("does not leak state when close-layer registration fails", async () => {
+test("does not depend on plugin-level keymap registration", async () => {
   const api = createFakeApi()
-  const registerLayer = api.keymap.registerLayer
-  let failRegistration = true
-  api.keymap.registerLayer = (layer) => {
-    if (failRegistration) throw new Error("keymap failed")
-    return registerLayer(layer)
+  api.keymap.registerLayer = () => {
+    throw new Error("plugin-level keymap registration is forbidden")
   }
   await createTestLoopTuiPlugin()(api)
 
-  assert.doesNotThrow(() => emitLoop(api, "First [id=first01]", "success"))
-  await settle()
-  assert.equal(api.ui.dialog.open, false)
-  assert.equal(api.__layers.filter((layer) => layer.active).length, 0)
-  assert.equal(api.__logs.length, 1)
-
-  failRegistration = false
-  emitLoop(api, "Second [id=second2]", "success")
+  emitLoop(api, "Loop started [id=second2]", "success")
   assert.equal(api.ui.dialog.open, true)
+  assert.equal(api.__logs.length, 0)
 })

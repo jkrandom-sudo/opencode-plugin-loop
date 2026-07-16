@@ -6,8 +6,8 @@ const packageJson = JSON.parse(
   await readFile(new URL("../package.json", import.meta.url), "utf8"),
 )
 
-test("publishes the responsive dialog release", () => {
-  assert.equal(packageJson.version, "0.2.7")
+test("publishes the interactive navigation release", () => {
+  assert.equal(packageJson.version, "0.2.8")
 })
 
 test("publishes explicit server and TUI plugin entrypoints", () => {

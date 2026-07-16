@@ -23,6 +23,8 @@ The 0.2.7 Loop dialog renders the actions correctly, but its interaction wiring 
 
 Move keyboard ownership into the mounted `LoopFeedbackDialog` by using `useKeyboard`, matching OpenCode 1.17.18's native dialog components. The listener exists only while the dialog component is mounted and consumes recognized navigation/activation events before they reach the prompt. Remove the separate plugin-level keymap layer and its lifecycle state.
 
+Arm the mounted listener in the next microtask. This prevents the `Enter`/`Return` event that submitted `/loop` and opened the dialog from immediately activating the initially selected copy action, while keeping subsequent input component-owned.
+
 Expose small pure interaction helpers used by the component:
 
 - `handleLoopDialogKey` maps terminal key events to move, activate, page, and close controller operations.
@@ -41,6 +43,7 @@ This provides deterministic Node tests without requiring OpenTUI's native test r
 - Mouse hover and mouse-down select the row under the pointer.
 - Mouse-up activates that exact row, so a stale keyboard selection cannot trigger a different action.
 - Recognized keyboard events call `preventDefault` and `stopPropagation`.
+- Keyboard input is ignored until the post-mount microtask arms the listener.
 
 ## Lifecycle and error handling
 
@@ -48,6 +51,6 @@ The plugin continues to own a single dialog generation. Clipboard completion clo
 
 ## Testing and release
 
-Automated tests will first fail against 0.2.7 for the missing key and pointer helpers. They will then cover all key mappings, event consumption, exact-row pointer activation, plugin cleanup without a temporary keymap layer, clipboard behavior, and the full existing suite.
+Automated tests will first fail against 0.2.7 for the missing key and pointer helpers. They will then cover all key mappings, event consumption, the command-submitting-key gate, exact-row pointer activation, plugin cleanup without a temporary keymap layer, clipboard behavior, and the full existing suite.
 
 Manual validation will install the packed build into OpenCode's actual plugin cache, open `/loop list --all`, and verify keyboard selection, mouse selection/click, copy-close, and `Close`. After GitHub integration, publish npm version 0.2.8, update the local cache from the published package, and repeat the OpenCode smoke test.
