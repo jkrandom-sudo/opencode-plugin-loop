@@ -985,6 +985,51 @@ test("plugin: chat.message hook updates active session", async () => {
   }
 })
 
+test("plugin: child-agent messages do not steal the active parent session", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-plugin-"))
+  try {
+    const promptCalls = []
+    const client = mockClient(promptCalls)
+    const mod = await import("../dist/index.js")
+    const hooks = await mod.LoopPlugin({
+      client,
+      project: { id: "test" },
+      directory: dir,
+      worktree: dir,
+      $: {},
+      serverUrl: new URL("http://localhost:3000"),
+      experimental_workspace: { register: () => {} },
+      options: { tickerIntervalMs: 10 },
+    })
+
+    await hooks["command.execute.before"](
+      { command: "loop", arguments: "1s taskA", sessionID: SID_A },
+      { parts: [] }
+    )
+    const tasksFile = join(dir, ".opencode/cache/loop/tasks.json")
+    const data = JSON.parse(readFileSync(tasksFile, "utf-8"))
+    data.tasks[0].nextDueAt = Date.now() - 1
+    writeFileSync(tasksFile, JSON.stringify(data), "utf-8")
+    await hooks.event({ event: { type: "session.compacted" } })
+
+    const childID = "sess-child-agent"
+    await hooks.event({
+      event: {
+        type: "session.created",
+        properties: { info: { id: childID, parentID: SID_A } },
+      },
+    })
+    await hooks["chat.message"]({ sessionID: childID, agent: "general" })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    assert.equal(promptCalls.length, 1, "due parent task still fires after child activity")
+    assert.equal(promptCalls[0].path.id, SID_A)
+    await hooks.dispose()
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
 test("plugin: command.execute.before captures sessionID from input", async () => {
   const dir = mkdtempSync(join(tmpdir(), "loop-plugin-"))
   try {

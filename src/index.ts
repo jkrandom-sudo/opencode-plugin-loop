@@ -89,8 +89,18 @@ export const LoopPlugin: Plugin = async (ctx) => {
   // Track which session the user is currently in.
   // Updated by chat.message hook (every user message) and command.execute.before.
   let activeSessionID: string | null = null
+  const sessionParents = new Map<string, string>()
+  const rootSessionID = (sid: string): string => {
+    const seen = new Set<string>()
+    let current = sid
+    while (sessionParents.has(current) && !seen.has(current)) {
+      seen.add(current)
+      current = sessionParents.get(current) as string
+    }
+    return current
+  }
   const setActive = (sid: string | null | undefined): void => {
-    if (sid) activeSessionID = sid
+    if (sid) activeSessionID = rootSessionID(sid)
   }
 
   // Internal ticker: every 5s, fire any due tasks whose sessionID matches the active session.
@@ -119,13 +129,22 @@ export const LoopPlugin: Plugin = async (ctx) => {
   const hooks: Hooks = {
     event: async ({ event }) => {
       const e = event as { type?: string; properties?: any; sessionID?: string }
+      if (e.type === "session.created" || e.type === "session.updated") {
+        const info = e.properties?.info
+        if (info?.id && info?.parentID) sessionParents.set(info.id, info.parentID)
+        return
+      }
       if (e.type === "session.compacted") {
         await store.load()
         return
       }
       if (e.type === "session.deleted") {
-        const sid = e.properties?.sessionID ?? e.sessionID
+        const sid = e.properties?.sessionID ?? e.properties?.info?.id ?? e.sessionID
         if (sid) {
+          sessionParents.delete(sid)
+          sessionParents.forEach((parent, child) => {
+            if (parent === sid) sessionParents.delete(child)
+          })
           const n = await store.cancelBySession(sid)
           if (n > 0) {
             await logger("info", `cleaned ${n} task(s) for deleted session`, {
