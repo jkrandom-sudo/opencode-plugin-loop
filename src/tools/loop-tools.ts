@@ -145,6 +145,7 @@ export async function buildLoopTools(
               input.adaptiveMaxMs = 3_600_000
             }
             const task = await store.create(input)
+            if (task.mode === "adaptive") await scheduler.rearmAdaptive(task)
             return JSON.stringify(
               {
                 ok: true,
@@ -173,11 +174,21 @@ export async function buildLoopTools(
                 error: `Task belongs to another session. Pass all=true to override.`,
               })
             }
-            const next = args.nextDueAtMs ?? Date.now() + scheduler.clampAdaptive(5 * 60_000)
+            const requestedNextDueAt = args.nextDueAtMs
+            const next =
+              t.mode === "adaptive"
+                ? requestedNextDueAt === undefined
+                  ? scheduler.adaptiveNextDueAt(t)
+                  : scheduler.clampAdaptiveNextDueAt(t, requestedNextDueAt)
+                : requestedNextDueAt ?? Date.now() + scheduler.clampAdaptive(5 * 60_000)
             const r = await store.reschedule(args.taskId, next)
             return JSON.stringify(
               {
                 ok: !!r,
+                requestedNextDueAt:
+                  requestedNextDueAt === undefined
+                    ? undefined
+                    : new Date(requestedNextDueAt).toISOString(),
                 task: r ? { id: r.id, nextDueAt: new Date(r.nextDueAt).toISOString() } : null,
               },
               null,

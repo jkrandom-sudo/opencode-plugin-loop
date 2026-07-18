@@ -9,11 +9,11 @@ A drop-in `/loop` command for [opencode](https://opencode.ai), modeled after Cla
 ## Features
 
 - **`/loop 5m <prompt>`** — fixed interval (s/m/h/d supported)
-- **`/loop <prompt>`** — adaptive interval (1 min–1 hr, LLM-decided)
+- **`/loop <prompt>`** — adaptive interval with a random 1 min–1 hr fallback that the LLM can override from the execution result
 - **`/loop`** — bare: read `.opencode/loop.md` or run built-in maintenance
 - **Per-session scoping** — tasks are bound to a `sessionID`; other sessions never see or fire them
 - **Subcommands** — `list | status | cancel | pause | resume | stop-all` (session-scoped; add `--all` to cross sessions)
-- **Internal ticker** — 15s loop drives task firing (no longer depends on `session.idle` events)
+- **Internal ticker** — 5s loop drives task firing (no longer depends on `session.idle` events)
 - **Inflight guard** — double-set at ticker and `fireTask` level prevents double-firing even if opencode hot-reloads the plugin
 - **Persistent tasks** — survive session restarts; auto-migrated (tasks without `sessionID` are dropped on load)
 - **Auto-cleanup on `session.deleted`** — all tasks for that session are cancelled automatically
@@ -112,7 +112,9 @@ Re-run `npm run build` after editing `src/`, then restart OpenCode to load the r
 /loop check whether CI passed and address any review comments
 ```
 
-The LLM receives the prompt each iteration and uses `loop_schedule` to pick the next interval (1–60 min).
+Each Adaptive task receives a persisted random fallback time inside the configured 1–60 minute range. On every iteration, the LLM first completes the user request and evaluates the current session state and execution result. It calls `loop_schedule(action="reschedule")` only when that evidence justifies an earlier or later run, leaves the random fallback unchanged when it is suitable, or calls `loop_schedule(action="cancel")` when no future check is useful.
+
+The fallback is written before the prompt is injected. A successful `reschedule` therefore replaces the fallback and is not overwritten after the model finishes. An in-range model time is stored exactly without Jitter; only an out-of-range request is clamped to the task's configured minimum or maximum delay. Fixed and Maintenance rescheduling remains unchanged.
 
 ### Bare `/loop` — custom default prompt
 Create `.opencode/loop.md` (project) or `<user>/.opencode/loop.md` (user) with your maintenance instructions:
@@ -180,20 +182,22 @@ loop_status({ all: true })     // all sessions
 
 ## Configuration
 
-Pass options via `opencode.json`:
+The package name in the `plugin` array is the only plugin-specific entry required in
+`opencode.json`. Current OpenCode releases validate that file and reject arbitrary
+top-level keys such as `"opencode-plugin-loop"`.
 
-```json
-{
-  "plugin": ["opencode-plugin-loop"],
-  "opencode-plugin-loop": {
-    "maxTasks": 50,
-    "taskTtlDays": 7,
-    "defaultAdaptiveMinMs": 60000,
-    "defaultAdaptiveMaxMs": 3600000,
-    "tickerIntervalMs": 15000
-  }
-}
-```
+The built-in runtime defaults are:
+
+| Setting | Default |
+|---------|---------|
+| Maximum persisted tasks | 50 |
+| Task expiry | 7 days |
+| Adaptive fallback range | 1 minute to 1 hour |
+| Scheduler ticker | 5 seconds |
+
+Adaptive minimum and maximum delays are persisted on each task. The random fallback
+and any model-requested `reschedule` are both constrained by that task's bounds. Jitter
+is not added to a model-selected Adaptive time.
 
 ## Per-session architecture
 
@@ -202,7 +206,7 @@ Each `/loop` task carries a `sessionID` field:
 | Lifecycle event | Behavior |
 |-----------------|----------|
 | User runs `/loop` in session A | Task created with `sessionID = A` |
-| Ticker fires every 15s | Only fires tasks where `sessionID === activeSessionID` (tracked via `chat.message` hook) |
+| Ticker fires every 5s | Only fires tasks where `sessionID === activeSessionID` (tracked via `chat.message` hook) |
 | User runs `/loop` in session B | Session B becomes active; A's task waits |
 | `session.deleted` for session A | All A's tasks cancelled automatically |
 | Plugin reload (`opencode` hot-reload) | Old tickers stop, new ticker starts; in-flight tasks guarded by `inflight` Set |

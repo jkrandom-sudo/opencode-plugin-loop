@@ -17,6 +17,11 @@ import type { LoopStoreInstance as LoopStore } from "./store.js"
 import type { CronParserInstance as CronParser } from "./cron-parser.js"
 import type { JitterInstance as Jitter } from "./jitter.js"
 import { errorMessage, type LoopLogger } from "./runtime-feedback.js"
+import {
+  buildAdaptiveExecutionPrompt,
+  clampAdaptiveNextDueAt as clampAdaptivePolicyNextDueAt,
+  randomAdaptiveNextDueAt,
+} from "./adaptive-policy.js"
 
 export interface SchedulerOptions {
   store: LoopStore
@@ -25,6 +30,7 @@ export interface SchedulerOptions {
   adaptiveMinMs: number
   adaptiveMaxMs: number
   logger?: LoopLogger
+  random?: () => number
 }
 
 export interface CommandParseResult {
@@ -46,8 +52,12 @@ interface SchedulerInstance {
   getDueTasks(now?: number): Promise<LoopTask[]>
   getDueTasksForSession(sessionID: string, now?: number): Promise<LoopTask[]>
   nextDueAt(task: LoopTask, now?: number): Promise<number>
+  executeTask(task: LoopTask, ctx: any, now?: number): Promise<void>
   fireTask(task: LoopTask, ctx: any): Promise<void>
   rearmFixed(task: LoopTask, now?: number): Promise<void>
+  rearmAdaptive(task: LoopTask, now?: number): Promise<void>
+  adaptiveNextDueAt(task: LoopTask, now?: number): number
+  clampAdaptiveNextDueAt(task: LoopTask, requestedAt: number, now?: number): number
   clampAdaptive(ms: number): number
 }
 
@@ -56,6 +66,7 @@ export type { SchedulerInstance }
 export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInstance {
   void this
   const logger: LoopLogger = opts.logger ?? (async () => {})
+  const random = opts.random ?? Math.random
   const inst: SchedulerInstance = {
     opts,
     currentSessionID: null,
@@ -148,6 +159,7 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
           source: "user",
           sessionID,
         })
+        await inst.rearmAdaptive(task)
         return {
           task,
           message: `🔁 Loop started (adaptive ${inst.opts.adaptiveMinMs / 1000}s–${inst.opts.adaptiveMaxMs / 1000}s): "${trimmed.slice(0, 50)}${trimmed.length > 50 ? "..." : ""}" [id=${task.id}] [s=${sessionID.slice(0, 8)}]. Cancel: \`/loop cancel ${task.id}\``,
@@ -256,9 +268,27 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
         return now + task.adaptiveMaxMs
       }
       if (task.mode === "adaptive" && task.adaptiveMaxMs) {
-        return now + task.adaptiveMaxMs
+        return inst.adaptiveNextDueAt(task, now)
       }
       return now + 60_000
+    },
+
+    async executeTask(task, ctx, now) {
+      if (task.mode === "adaptive") {
+        const fallbackNextDueAt = randomAdaptiveNextDueAt(
+          task,
+          { minMs: inst.opts.adaptiveMinMs, maxMs: inst.opts.adaptiveMaxMs },
+          random,
+          now ?? Date.now()
+        )
+        await inst.opts.store.markFired(task.id, fallbackNextDueAt)
+        await inst.fireTask(task, ctx)
+        return
+      }
+
+      await inst.fireTask(task, ctx)
+      const next = await inst.nextDueAt(task, now ?? Date.now())
+      await inst.opts.store.markFired(task.id, next)
     },
 
     async fireTask(task, ctx) {
@@ -266,7 +296,13 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
       inst.inflight.add(task.id)
       try {
         const sessionID = task.sessionID
-        const text = task.prompt
+        const text =
+          task.mode === "adaptive"
+            ? buildAdaptiveExecutionPrompt(task, {
+                minMs: inst.opts.adaptiveMinMs,
+                maxMs: inst.opts.adaptiveMaxMs,
+              })
+            : task.prompt
         const directory = task.directory || ctx?.directory || process.cwd()
         const client = ctx?.client
 
@@ -312,6 +348,29 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
       if (!task.intervalMs) return
       const jitterMs = inst.opts.jitter.compute(task.id, task.intervalMs, now)
       await inst.opts.store.reschedule(task.id, now + task.intervalMs + jitterMs)
+    },
+
+    async rearmAdaptive(task, now: number = Date.now()) {
+      if (task.mode !== "adaptive") return
+      await inst.opts.store.reschedule(task.id, inst.adaptiveNextDueAt(task, now))
+    },
+
+    adaptiveNextDueAt(task, now: number = Date.now()) {
+      return randomAdaptiveNextDueAt(
+        task,
+        { minMs: inst.opts.adaptiveMinMs, maxMs: inst.opts.adaptiveMaxMs },
+        random,
+        now
+      )
+    },
+
+    clampAdaptiveNextDueAt(task, requestedAt, now: number = Date.now()) {
+      return clampAdaptivePolicyNextDueAt(
+        task,
+        { minMs: inst.opts.adaptiveMinMs, maxMs: inst.opts.adaptiveMaxMs },
+        requestedAt,
+        now
+      )
     },
 
     clampAdaptive(ms) {

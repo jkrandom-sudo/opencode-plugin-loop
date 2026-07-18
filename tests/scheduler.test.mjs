@@ -8,7 +8,7 @@ import { Scheduler } from "../dist/scheduler.js"
 import { CronParser } from "../dist/cron-parser.js"
 import { Jitter } from "../dist/jitter.js"
 
-function makeScheduler(logger) {
+function makeScheduler(logger, random) {
   const dir = mkdtempSync(join(tmpdir(), "loop-sched-"))
   const store = new LoopStore({ storageDir: dir })
   const sched = new Scheduler({
@@ -18,6 +18,7 @@ function makeScheduler(logger) {
     adaptiveMinMs: 60_000,
     adaptiveMaxMs: 3_600_000,
     logger,
+    random,
   })
   return { sched, store, dir }
 }
@@ -47,6 +48,17 @@ test("/loop <prompt> → adaptive mode", async () => {
     assert.equal(r.task.adaptiveMinMs, 60_000)
     assert.equal(r.task.adaptiveMaxMs, 3_600_000)
     assert.equal(r.task.sessionID, "s1")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("/loop <prompt> persists a random adaptive fallback on creation", async () => {
+  const { sched, dir } = makeScheduler(undefined, () => 0.5)
+  try {
+    const r = await sched.handleUserCommand("check the deploy", "/tmp", "s1")
+    const delay = r.task.nextDueAt - r.task.createdAt
+    assert.ok(delay >= 1_830_000 && delay < 1_830_100, `unexpected midpoint delay ${delay}`)
   } finally {
     rmSync(dir, { recursive: true })
   }
@@ -121,6 +133,23 @@ test("nextDueAt: maintenance → adaptiveMaxMs", async () => {
     const now = Date.now()
     const nd = await sched.nextDueAt(t, now)
     assert.equal(nd, now + 3_600_000)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("nextDueAt: adaptive → random task-specific fallback", async () => {
+  const { sched, store, dir } = makeScheduler(undefined, () => 0.5)
+  try {
+    const t = await store.create({
+      prompt: "a",
+      mode: "adaptive",
+      adaptiveMinMs: 1_000,
+      adaptiveMaxMs: 3_000,
+      directory: "/tmp",
+      sessionID: "s1",
+    })
+    assert.equal(await sched.nextDueAt(t, 10_000), 12_000)
   } finally {
     rmSync(dir, { recursive: true })
   }

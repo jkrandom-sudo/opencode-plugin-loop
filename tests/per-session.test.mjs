@@ -23,7 +23,7 @@ import { buildLoopTools } from "../dist/tools/loop-tools.js"
 const SID_A = "sess-aaa-aaaa"
 const SID_B = "sess-bbb-bbbb"
 
-function makeScheduler() {
+function makeScheduler(random) {
   const dir = mkdtempSync(join(tmpdir(), "loop-persess-"))
   const store = new LoopStore({ storageDir: dir, maxTasks: 20, taskTtlMs: 86_400_000 })
   const sched = new Scheduler({
@@ -32,6 +32,7 @@ function makeScheduler() {
     jitter: new Jitter(),
     adaptiveMinMs: 60_000,
     adaptiveMaxMs: 3_600_000,
+    random,
   })
   return { store, sched, dir }
 }
@@ -396,6 +397,91 @@ test("fireTask: after inflight release, same task can fire again", async () => {
   }
 })
 
+test("executeTask pre-arms adaptive fallback before prompt and preserves model override", async () => {
+  const { sched, store, dir } = makeScheduler(() => 0.5)
+  try {
+    const task = await store.create({
+      prompt: "inspect deployment",
+      mode: "adaptive",
+      adaptiveMinMs: 1_000,
+      adaptiveMaxMs: 3_000,
+      directory: "/tmp",
+      sessionID: SID_A,
+    })
+    await store.reschedule(task.id, 9_000)
+    let fallbackSeenDuringPrompt
+    let promptText
+    const client = {
+      session: {
+        async prompt(args) {
+          fallbackSeenDuringPrompt = store.get(task.id).nextDueAt
+          promptText = args.body.parts[0].text
+          await store.reschedule(task.id, 12_500)
+          return { info: {}, parts: [] }
+        },
+      },
+    }
+
+    await sched.executeTask(task, { client, directory: "/tmp" }, 10_000)
+
+    assert.equal(fallbackSeenDuringPrompt, 12_000)
+    assert.match(promptText, /inspect deployment/)
+    assert.match(promptText, /fallback/i)
+    assert.match(promptText, /taskId="[a-z0-9]+"/)
+    assert.equal(store.get(task.id).nextDueAt, 12_500, "model override remains authoritative")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("executeTask keeps adaptive fallback when the model does not reschedule", async () => {
+  const { sched, store, dir } = makeScheduler(() => 0.5)
+  try {
+    const task = await store.create({
+      prompt: "inspect deployment",
+      mode: "adaptive",
+      adaptiveMinMs: 1_000,
+      adaptiveMaxMs: 3_000,
+      directory: "/tmp",
+      sessionID: SID_A,
+    })
+    await sched.executeTask(task, { client: mockClient(), directory: "/tmp" }, 10_000)
+    assert.equal(store.get(task.id).nextDueAt, 12_000)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("executeTask retains post-fire scheduling for fixed tasks", async () => {
+  const { sched, store, dir } = makeScheduler(() => 0.5)
+  try {
+    const task = await store.create({
+      prompt: "fixed work",
+      mode: "fixed",
+      intervalMs: 60_000,
+      directory: "/tmp",
+      sessionID: SID_A,
+    })
+    await store.reschedule(task.id, 9_000)
+    let dueDuringPrompt
+    const client = {
+      session: {
+        async prompt() {
+          dueDuringPrompt = store.get(task.id).nextDueAt
+          return { info: {}, parts: [] }
+        },
+      },
+    }
+
+    await sched.executeTask(task, { client, directory: "/tmp" }, 10_000)
+
+    assert.equal(dueDuringPrompt, 9_000)
+    assert.notEqual(store.get(task.id).nextDueAt, 9_000)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
 // ============== Tools-level ==============
 
 test("loop_schedule create uses ctx.sessionID", async () => {
@@ -410,6 +496,125 @@ test("loop_schedule create uses ctx.sessionID", async () => {
     )
     assert.equal(r.ok, true)
     assert.equal(r.task.sessionID, SID_A)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("loop_schedule adaptive create persists a random fallback", async () => {
+  const { store, sched, dir } = makeScheduler(() => 0.5)
+  try {
+    const tools = await buildLoopTools(store, sched)
+    const r = JSON.parse(
+      await tools.loop_schedule.execute(
+        { action: "create", prompt: "tool-adaptive", mode: "adaptive" },
+        mockCtx(SID_A, dir)
+      )
+    )
+    const stored = store.get(r.task.id)
+    const delay = stored.nextDueAt - stored.createdAt
+    assert.ok(delay >= 1_830_000 && delay < 1_830_100, `unexpected midpoint delay ${delay}`)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("loop_schedule stores in-range adaptive times without jitter and clamps only to bounds", async () => {
+  const { store, sched, dir } = makeScheduler(() => 0.5)
+  try {
+    const tools = await buildLoopTools(store, sched)
+    const task = await store.create({
+      prompt: "bounded",
+      mode: "adaptive",
+      adaptiveMinMs: 1_000,
+      adaptiveMaxMs: 3_000,
+      directory: dir,
+      sessionID: SID_A,
+    })
+
+    const belowRequested = Date.now() - 1
+    const belowStarted = Date.now()
+    const below = JSON.parse(
+      await tools.loop_schedule.execute(
+        { action: "reschedule", taskId: task.id, nextDueAtMs: belowRequested },
+        mockCtx(SID_A, dir)
+      )
+    )
+    assert.equal(below.requestedNextDueAt, new Date(belowRequested).toISOString())
+    assert.ok(Date.parse(below.task.nextDueAt) >= belowStarted + 1_000)
+    assert.ok(Date.parse(below.task.nextDueAt) <= Date.now() + 3_000)
+
+    const insideRequested = Date.now() + 2_000
+    const inside = JSON.parse(
+      await tools.loop_schedule.execute(
+        { action: "reschedule", taskId: task.id, nextDueAtMs: insideRequested },
+        mockCtx(SID_A, dir)
+      )
+    )
+    assert.equal(Date.parse(inside.task.nextDueAt), insideRequested)
+
+    const aboveRequested = Date.now() + 10_000
+    const aboveStarted = Date.now()
+    const above = JSON.parse(
+      await tools.loop_schedule.execute(
+        { action: "reschedule", taskId: task.id, nextDueAtMs: aboveRequested },
+        mockCtx(SID_A, dir)
+      )
+    )
+    assert.equal(above.requestedNextDueAt, new Date(aboveRequested).toISOString())
+    assert.ok(Date.parse(above.task.nextDueAt) >= aboveStarted + 1_000)
+    assert.ok(Date.parse(above.task.nextDueAt) <= Date.now() + 3_000)
+    assert.equal(store.get(task.id).nextDueAt, Date.parse(above.task.nextDueAt))
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("loop_schedule chooses a random fallback when adaptive reschedule omits time", async () => {
+  const { store, sched, dir } = makeScheduler(() => 0.5)
+  try {
+    const tools = await buildLoopTools(store, sched)
+    const task = await store.create({
+      prompt: "random",
+      mode: "adaptive",
+      adaptiveMinMs: 1_000,
+      adaptiveMaxMs: 3_000,
+      directory: dir,
+      sessionID: SID_A,
+    })
+    const started = Date.now()
+    const result = JSON.parse(
+      await tools.loop_schedule.execute(
+        { action: "reschedule", taskId: task.id },
+        mockCtx(SID_A, dir)
+      )
+    )
+    const delay = Date.parse(result.task.nextDueAt) - started
+    assert.ok(delay >= 2_000 && delay < 2_100, `unexpected midpoint delay ${delay}`)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("loop_schedule keeps fixed reschedule times unrestricted", async () => {
+  const { store, sched, dir } = makeScheduler(() => 0.5)
+  try {
+    const tools = await buildLoopTools(store, sched)
+    const task = await store.create({
+      prompt: "fixed",
+      mode: "fixed",
+      intervalMs: 60_000,
+      directory: dir,
+      sessionID: SID_A,
+    })
+    const requested = 123_456
+    const result = JSON.parse(
+      await tools.loop_schedule.execute(
+        { action: "reschedule", taskId: task.id, nextDueAtMs: requested },
+        mockCtx(SID_A, dir)
+      )
+    )
+    assert.equal(Date.parse(result.task.nextDueAt), requested)
   } finally {
     rmSync(dir, { recursive: true })
   }

@@ -45,7 +45,7 @@ export interface LoopConfig {
   defaultAdaptiveMinMs?: number
   /** Adaptive maximum interval in ms (default 3_600_000) */
   defaultAdaptiveMaxMs?: number
-  /** Internal ticker interval in ms (default 15_000) */
+  /** Internal ticker interval in ms (default 5_000) */
   tickerIntervalMs?: number
 }
 
