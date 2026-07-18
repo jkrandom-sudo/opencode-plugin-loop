@@ -45,6 +45,7 @@ const DEFAULT_CONFIG: Required<LoopConfig> = {
   defaultAdaptiveMinMs: 60_000,
   defaultAdaptiveMaxMs: 3_600_000,
   tickerIntervalMs: 5_000,
+  defaultJitterEnabled: true,
 }
 
 function commandAction(args: string): string {
@@ -81,6 +82,7 @@ export const LoopPlugin: Plugin = async (ctx) => {
     jitter,
     adaptiveMinMs: config.defaultAdaptiveMinMs,
     adaptiveMaxMs: config.defaultAdaptiveMaxMs,
+    defaultJitterEnabled: config.defaultJitterEnabled,
     logger,
   })
 

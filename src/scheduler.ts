@@ -29,6 +29,7 @@ export interface SchedulerOptions {
   jitter: Jitter
   adaptiveMinMs: number
   adaptiveMaxMs: number
+  defaultJitterEnabled?: boolean
   logger?: LoopLogger
   random?: () => number
 }
@@ -62,6 +63,19 @@ interface SchedulerInstance {
 }
 
 export type { SchedulerInstance }
+
+function extractJitterFlag(text: string): { prompt: string; jitterEnabled?: boolean } {
+  const tokens = text.trim().split(/\s+/)
+  const index = tokens.findIndex(
+    (token) => token === "--jitter=true" || token === "--jitter=false"
+  )
+  if (index < 0) return { prompt: text.trim() }
+  const [flag] = tokens.splice(index, 1)
+  return {
+    prompt: tokens.join(" ").trim(),
+    jitterEnabled: flag === "--jitter=true",
+  }
+}
 
 export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInstance {
   void this
@@ -135,17 +149,20 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
 
       const { interval, rest } = inst.opts.cron.extractInterval(trimmed)
       if (interval && rest.trim()) {
+        const fixed = extractJitterFlag(rest)
+        if (!fixed.prompt) return { message: "❌ Empty loop command" }
         const task = await inst.opts.store.create({
-          prompt: rest.trim(),
+          prompt: fixed.prompt,
           mode: "fixed",
           intervalMs: interval.ms,
+          jitterEnabled: fixed.jitterEnabled ?? inst.opts.defaultJitterEnabled ?? true,
           directory,
           source: "user",
           sessionID,
         })
         return {
           task,
-          message: `🔁 Loop started: every ${interval.display}, prompt "${rest.trim().slice(0, 50)}${rest.length > 50 ? "..." : ""}" [id=${task.id}] [s=${sessionID.slice(0, 8)}]. Cancel: \`/loop cancel ${task.id}\``,
+          message: `🔁 Loop started: every ${interval.display}, prompt "${fixed.prompt.slice(0, 50)}${fixed.prompt.length > 50 ? "..." : ""}" [id=${task.id}] [s=${sessionID.slice(0, 8)}]. Cancel: \`/loop cancel ${task.id}\``,
         }
       }
 
@@ -261,7 +278,10 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
 
     async nextDueAt(task, now: number = Date.now()) {
       if (task.mode === "fixed" && task.intervalMs) {
-        const jitter = inst.opts.jitter.compute(task.id, task.intervalMs, now)
+        const jitter =
+          task.jitterEnabled === false
+            ? 0
+            : inst.opts.jitter.compute(task.id, task.intervalMs, now)
         return now + task.intervalMs + jitter
       }
       if (task.mode === "maintenance" && task.adaptiveMaxMs) {
@@ -346,7 +366,10 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
 
     async rearmFixed(task, now: number = Date.now()) {
       if (!task.intervalMs) return
-      const jitterMs = inst.opts.jitter.compute(task.id, task.intervalMs, now)
+      const jitterMs =
+        task.jitterEnabled === false
+          ? 0
+          : inst.opts.jitter.compute(task.id, task.intervalMs, now)
       await inst.opts.store.reschedule(task.id, now + task.intervalMs + jitterMs)
     },
 

@@ -143,7 +143,8 @@ export async function buildLoopTools(
             }
             if (mode === "fixed" && args.intervalMs) {
               input.intervalMs = args.intervalMs
-              input.jitterEnabled = args.jitterEnabled
+              input.jitterEnabled =
+                args.jitterEnabled ?? scheduler.opts.defaultJitterEnabled ?? true
             }
             if (mode === "adaptive") {
               input.adaptiveMinMs = 60_000

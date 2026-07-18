@@ -8,7 +8,7 @@ import { Scheduler } from "../dist/scheduler.js"
 import { CronParser } from "../dist/cron-parser.js"
 import { Jitter } from "../dist/jitter.js"
 
-function makeScheduler(logger, random) {
+function makeScheduler(logger, random, overrides = {}) {
   const dir = mkdtempSync(join(tmpdir(), "loop-sched-"))
   const store = new LoopStore({ storageDir: dir })
   const sched = new Scheduler({
@@ -19,6 +19,7 @@ function makeScheduler(logger, random) {
     adaptiveMaxMs: 3_600_000,
     logger,
     random,
+    ...overrides,
   })
   return { sched, store, dir }
 }
@@ -121,6 +122,84 @@ test("nextDueAt: fixed → interval + jitter", async () => {
       // For 60s interval: jitter ∈ {-60000, +60000} → diff ∈ {0, 120000}
       assert.ok(diff >= 0 && diff <= 120_000, `diff ${diff} out of [0, 120000]`)
     }
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("fixed scheduling honors task-level jitterEnabled", async () => {
+  const { sched, store, dir } = makeScheduler(undefined, undefined, {
+    jitter: { compute: () => 1_234 },
+  })
+  try {
+    const legacy = await store.create({
+      prompt: "legacy",
+      mode: "fixed",
+      intervalMs: 60_000,
+      directory: "/tmp",
+      sessionID: "s1",
+    })
+    const exact = await store.create({
+      prompt: "exact",
+      mode: "fixed",
+      intervalMs: 60_000,
+      jitterEnabled: false,
+      directory: "/tmp",
+      sessionID: "s1",
+    })
+    const now = 10_000
+
+    assert.equal(await sched.nextDueAt(legacy, now), 71_234)
+    assert.equal(await sched.nextDueAt(exact, now), 70_000)
+
+    await sched.rearmFixed(exact, now)
+    assert.equal(store.get(exact.id).nextDueAt, 70_000)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("explicit fixed commands use the programmatic jitter default", async () => {
+  const { sched, dir } = makeScheduler(undefined, undefined, {
+    defaultJitterEnabled: false,
+  })
+  try {
+    const result = await sched.handleUserCommand("2m check version", "/tmp", "s1")
+
+    assert.equal(result.task.jitterEnabled, false)
+    assert.equal(result.task.prompt, "check version")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("fixed command jitter flags override defaults and are removed from the prompt", async () => {
+  const { sched, dir } = makeScheduler(undefined, undefined, {
+    defaultJitterEnabled: false,
+  })
+  try {
+    const enabled = await sched.handleUserCommand(
+      "2m --jitter=true check version",
+      "/tmp",
+      "s1"
+    )
+    const disabled = await sched.handleUserCommand(
+      "2m check deploy --jitter=false",
+      "/tmp",
+      "s1"
+    )
+    const invalid = await sched.handleUserCommand(
+      "2m --jitter=maybe keep this text",
+      "/tmp",
+      "s1"
+    )
+
+    assert.equal(enabled.task.jitterEnabled, true)
+    assert.equal(enabled.task.prompt, "check version")
+    assert.equal(disabled.task.jitterEnabled, false)
+    assert.equal(disabled.task.prompt, "check deploy")
+    assert.equal(invalid.task.jitterEnabled, false)
+    assert.equal(invalid.task.prompt, "--jitter=maybe keep this text")
   } finally {
     rmSync(dir, { recursive: true })
   }

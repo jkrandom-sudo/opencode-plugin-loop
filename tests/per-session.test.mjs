@@ -23,7 +23,7 @@ import { buildLoopTools } from "../dist/tools/loop-tools.js"
 const SID_A = "sess-aaa-aaaa"
 const SID_B = "sess-bbb-bbbb"
 
-function makeScheduler(random) {
+function makeScheduler(random, overrides = {}) {
   const dir = mkdtempSync(join(tmpdir(), "loop-persess-"))
   const store = new LoopStore({ storageDir: dir, maxTasks: 20, taskTtlMs: 86_400_000 })
   const sched = new Scheduler({
@@ -33,6 +33,7 @@ function makeScheduler(random) {
     adaptiveMinMs: 60_000,
     adaptiveMaxMs: 3_600_000,
     random,
+    ...overrides,
   })
   return { store, sched, dir }
 }
@@ -496,6 +497,38 @@ test("loop_schedule create uses ctx.sessionID", async () => {
     )
     assert.equal(r.ok, true)
     assert.equal(r.task.sessionID, SID_A)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("loop_schedule fixed create uses the programmatic jitter default and explicit override", async () => {
+  const { store, sched, dir } = makeScheduler(undefined, {
+    defaultJitterEnabled: false,
+  })
+  try {
+    const tools = await buildLoopTools(store, sched)
+    const inherited = JSON.parse(
+      await tools.loop_schedule.execute(
+        { action: "create", prompt: "inherited", mode: "fixed", intervalMs: 60_000 },
+        mockCtx(SID_A, dir)
+      )
+    )
+    const overridden = JSON.parse(
+      await tools.loop_schedule.execute(
+        {
+          action: "create",
+          prompt: "overridden",
+          mode: "fixed",
+          intervalMs: 60_000,
+          jitterEnabled: true,
+        },
+        mockCtx(SID_A, dir)
+      )
+    )
+
+    assert.equal(store.get(inherited.task.id).jitterEnabled, false)
+    assert.equal(store.get(overridden.task.id).jitterEnabled, true)
   } finally {
     rmSync(dir, { recursive: true })
   }

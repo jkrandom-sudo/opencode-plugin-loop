@@ -49,6 +49,8 @@ export interface LoopConfig {
   defaultAdaptiveMaxMs?: number
   /** Internal ticker interval in ms (default 5_000) */
   tickerIntervalMs?: number
+  /** Default Jitter policy for newly created Fixed tasks (default true) */
+  defaultJitterEnabled?: boolean
 }
 
 export interface CreateTaskInput {
