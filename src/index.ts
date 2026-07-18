@@ -18,7 +18,7 @@
  * Per-session architecture:
  *   - chat.message hook tracks the current active sessionID
  *   - command.execute.before also updates currentSessionID
- *   - 15s ticker fires ONLY tasks whose sessionID === currentSessionID
+ *   - 5s ticker fires ONLY tasks whose sessionID === currentSessionID
  *   - session.deleted event cancels all tasks for that session
  *   - On load, tasks without sessionID (legacy) are cleaned up
  */
@@ -91,7 +91,7 @@ export const LoopPlugin: Plugin = async (ctx) => {
     if (sid) activeSessionID = sid
   }
 
-  // Internal ticker: every 15s, fire any due tasks whose sessionID matches the active session.
+  // Internal ticker: every 5s, fire any due tasks whose sessionID matches the active session.
   // This replaces the old session.idle-event-driven firing and runs even when no user input.
   const inflight = new Set<string>()
   const ticker = setInterval(async () => {
@@ -104,9 +104,7 @@ export const LoopPlugin: Plugin = async (ctx) => {
         if (inflight.has(task.id)) continue
         inflight.add(task.id)
         try {
-          await scheduler.fireTask(task, ctx)
-          const next = await scheduler.nextDueAt(task)
-          await store.markFired(task.id, next)
+          await scheduler.executeTask(task, ctx)
         } finally {
           inflight.delete(task.id)
         }
