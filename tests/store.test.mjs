@@ -320,6 +320,58 @@ test("markFired respects explicit nextDueAt", async () => {
   }
 })
 
+test("create persists an explicit fixed-task jitter policy", async () => {
+  const { store, dir } = makeStore()
+  try {
+    const task = await store.create({
+      prompt: "fixed without jitter",
+      mode: "fixed",
+      intervalMs: 120_000,
+      jitterEnabled: false,
+      directory: "/tmp",
+      sessionID: "s1",
+    })
+
+    assert.equal(task.jitterEnabled, false)
+
+    const reloaded = new LoopStore({ storageDir: dir })
+    await reloaded.load()
+    assert.equal(reloaded.get(task.id).jitterEnabled, false)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("setFixed atomically converts an adaptive task", async () => {
+  const { store, dir } = makeStore()
+  try {
+    const task = await store.create({
+      prompt: "check version",
+      mode: "adaptive",
+      adaptiveMinMs: 60_000,
+      adaptiveMaxMs: 3_600_000,
+      directory: "/tmp",
+      sessionID: "s1",
+    })
+
+    const converted = await store.setFixed(task.id, 120_000, false, 10_000)
+
+    assert.equal(converted.mode, "fixed")
+    assert.equal(converted.intervalMs, 120_000)
+    assert.equal(converted.jitterEnabled, false)
+    assert.equal(converted.adaptiveMinMs, undefined)
+    assert.equal(converted.adaptiveMaxMs, undefined)
+    assert.equal(converted.lastFiredAt, 10_000)
+    assert.equal(converted.nextDueAt, 130_000)
+
+    const reloaded = new LoopStore({ storageDir: dir })
+    await reloaded.load()
+    assert.deepEqual(reloaded.get(task.id), converted)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
 test("structured logger records task cleanup without console output", async () => {
   const dir = mkdtempSync(join(tmpdir(), "loop-test-"))
   const consoleCalls = []

@@ -434,6 +434,51 @@ test("command failure becomes an error toast instead of rejecting", async () => 
   }
 })
 
+test("natural adaptive command becomes the current model turn instead of an acknowledgement", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-int-"))
+  let hooks
+  try {
+    const mockClient = {
+      app: { log: async () => true },
+      tui: { showToast: async () => true },
+    }
+    hooks = await pluginModule.LoopPlugin({
+      client: mockClient,
+      project: { id: "test" },
+      directory: dir,
+      worktree: dir,
+      $: {},
+      serverUrl: new URL("http://localhost:3000"),
+      experimental_workspace: { register: () => {} },
+    })
+    const output = {
+      parts: [
+        {
+          id: "part-1",
+          sessionID: "sA",
+          messageID: "m1",
+          type: "text",
+          text: "每隔两分钟查看插件最新版本",
+        },
+      ],
+    }
+
+    await hooks["command.execute.before"](
+      { command: "loop", arguments: "每隔两分钟查看插件最新版本", sessionID: "sA" },
+      output
+    )
+
+    assert.match(output.parts[0].text, /每隔两分钟查看插件最新版本/)
+    assert.match(output.parts[0].text, /set_fixed/)
+    assert.match(output.parts[0].text, /delayMs/)
+    assert.doesNotMatch(output.parts[0].text, /already handled/i)
+    assert.equal(output.parts[0].synthetic, true)
+  } finally {
+    if (hooks) await hooks.dispose()
+    rmSync(dir, { recursive: true })
+  }
+})
+
 test("toast transport failure is recorded in structured logs", async () => {
   const dir = mkdtempSync(join(tmpdir(), "loop-int-"))
   let hooks

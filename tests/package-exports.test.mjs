@@ -14,7 +14,7 @@ const builtDialogView = await readFile(
 )
 
 test("publishes the Adaptive scheduling release", () => {
-  assert.equal(packageJson.version, "0.2.10")
+  assert.equal(packageJson.version, "0.2.11")
 })
 
 test("publishes explicit server and TUI plugin entrypoints", () => {

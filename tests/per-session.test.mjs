@@ -23,7 +23,7 @@ import { buildLoopTools } from "../dist/tools/loop-tools.js"
 const SID_A = "sess-aaa-aaaa"
 const SID_B = "sess-bbb-bbbb"
 
-function makeScheduler(random) {
+function makeScheduler(random, overrides = {}) {
   const dir = mkdtempSync(join(tmpdir(), "loop-persess-"))
   const store = new LoopStore({ storageDir: dir, maxTasks: 20, taskTtlMs: 86_400_000 })
   const sched = new Scheduler({
@@ -33,6 +33,7 @@ function makeScheduler(random) {
     adaptiveMinMs: 60_000,
     adaptiveMaxMs: 3_600_000,
     random,
+    ...overrides,
   })
   return { store, sched, dir }
 }
@@ -501,6 +502,38 @@ test("loop_schedule create uses ctx.sessionID", async () => {
   }
 })
 
+test("loop_schedule fixed create uses the programmatic jitter default and explicit override", async () => {
+  const { store, sched, dir } = makeScheduler(undefined, {
+    defaultJitterEnabled: false,
+  })
+  try {
+    const tools = await buildLoopTools(store, sched)
+    const inherited = JSON.parse(
+      await tools.loop_schedule.execute(
+        { action: "create", prompt: "inherited", mode: "fixed", intervalMs: 60_000 },
+        mockCtx(SID_A, dir)
+      )
+    )
+    const overridden = JSON.parse(
+      await tools.loop_schedule.execute(
+        {
+          action: "create",
+          prompt: "overridden",
+          mode: "fixed",
+          intervalMs: 60_000,
+          jitterEnabled: true,
+        },
+        mockCtx(SID_A, dir)
+      )
+    )
+
+    assert.equal(store.get(inherited.task.id).jitterEnabled, false)
+    assert.equal(store.get(overridden.task.id).jitterEnabled, true)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
 test("loop_schedule adaptive create persists a random fallback", async () => {
   const { store, sched, dir } = makeScheduler(() => 0.5)
   try {
@@ -591,6 +624,220 @@ test("loop_schedule chooses a random fallback when adaptive reschedule omits tim
     )
     const delay = Date.parse(result.task.nextDueAt) - started
     assert.ok(delay >= 2_000 && delay < 2_100, `unexpected midpoint delay ${delay}`)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("loop_schedule reschedules adaptive tasks from a relative delay without jitter", async () => {
+  const { store, sched, dir } = makeScheduler(() => 0.5)
+  try {
+    const tools = await buildLoopTools(store, sched)
+    const task = await store.create({
+      prompt: "relative",
+      mode: "adaptive",
+      adaptiveMinMs: 1_000,
+      adaptiveMaxMs: 3_000,
+      directory: dir,
+      sessionID: SID_A,
+    })
+
+    const started = Date.now()
+    const result = JSON.parse(
+      await tools.loop_schedule.execute(
+        { action: "reschedule", taskId: task.id, delayMs: 2_000 },
+        mockCtx(SID_A, dir)
+      )
+    )
+
+    assert.equal(result.requestedDelayMs, 2_000)
+    assert.equal(result.effectiveDelayMs, 2_000)
+    assert.ok(Date.parse(result.task.nextDueAt) >= started + 2_000)
+    assert.ok(Date.parse(result.task.nextDueAt) <= Date.now() + 2_000)
+
+    const belowStarted = Date.now()
+    const below = JSON.parse(
+      await tools.loop_schedule.execute(
+        { action: "reschedule", taskId: task.id, delayMs: 100 },
+        mockCtx(SID_A, dir)
+      )
+    )
+    assert.equal(below.requestedDelayMs, 100)
+    assert.equal(below.effectiveDelayMs, 1_000)
+    assert.ok(Date.parse(below.task.nextDueAt) >= belowStarted + 1_000)
+
+    const aboveStarted = Date.now()
+    const above = JSON.parse(
+      await tools.loop_schedule.execute(
+        { action: "reschedule", taskId: task.id, delayMs: 10_000 },
+        mockCtx(SID_A, dir)
+      )
+    )
+    assert.equal(above.requestedDelayMs, 10_000)
+    assert.equal(above.effectiveDelayMs, 3_000)
+    assert.ok(Date.parse(above.task.nextDueAt) >= aboveStarted + 3_000)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("loop_schedule rejects relative and absolute reschedule times together without mutation", async () => {
+  const { store, sched, dir } = makeScheduler()
+  try {
+    const tools = await buildLoopTools(store, sched)
+    const task = await store.create({
+      prompt: "conflict",
+      mode: "adaptive",
+      adaptiveMinMs: 1_000,
+      adaptiveMaxMs: 3_000,
+      directory: dir,
+      sessionID: SID_A,
+    })
+    const before = task.nextDueAt
+    const result = JSON.parse(
+      await tools.loop_schedule.execute(
+        {
+          action: "reschedule",
+          taskId: task.id,
+          delayMs: 2_000,
+          nextDueAtMs: Date.now() + 2_500,
+        },
+        mockCtx(SID_A, dir)
+      )
+    )
+
+    assert.equal(result.ok, false)
+    assert.match(result.error, /mutually exclusive/i)
+    assert.equal(store.get(task.id).nextDueAt, before)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("loop_schedule set_fixed converts adaptive tasks and defaults jitter off", async () => {
+  const { store, sched, dir } = makeScheduler()
+  try {
+    const tools = await buildLoopTools(store, sched)
+    const task = await store.create({
+      prompt: "every two minutes",
+      mode: "adaptive",
+      adaptiveMinMs: 60_000,
+      adaptiveMaxMs: 3_600_000,
+      directory: dir,
+      sessionID: SID_A,
+    })
+    const started = Date.now()
+    const result = JSON.parse(
+      await tools.loop_schedule.execute(
+        { action: "set_fixed", taskId: task.id, intervalMs: 120_000 },
+        mockCtx(SID_A, dir)
+      )
+    )
+
+    assert.equal(result.ok, true)
+    assert.equal(result.task.mode, "fixed")
+    assert.equal(result.task.intervalMs, 120_000)
+    assert.equal(result.task.jitterEnabled, false)
+    assert.equal(Date.parse(result.task.nextDueAt) - result.task.lastFiredAt, 120_000)
+    assert.ok(result.task.lastFiredAt >= started)
+    assert.equal(store.get(task.id).adaptiveMinMs, undefined)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("loop_schedule set_fixed accepts explicit jitter and enforces validation", async () => {
+  const { store, sched, dir } = makeScheduler()
+  try {
+    const tools = await buildLoopTools(store, sched)
+    const makeAdaptive = () =>
+      store.create({
+        prompt: "convert",
+        mode: "adaptive",
+        adaptiveMinMs: 1_000,
+        adaptiveMaxMs: 3_000,
+        directory: dir,
+        sessionID: SID_A,
+      })
+
+    const explicit = await makeAdaptive()
+    const converted = JSON.parse(
+      await tools.loop_schedule.execute(
+        {
+          action: "set_fixed",
+          taskId: explicit.id,
+          intervalMs: 5_000,
+          jitterEnabled: true,
+        },
+        mockCtx(SID_A, dir)
+      )
+    )
+    assert.equal(converted.task.jitterEnabled, true)
+
+    for (const intervalMs of [undefined, 999, Number.NaN]) {
+      const candidate = await makeAdaptive()
+      const before = structuredClone(candidate)
+      const rejected = JSON.parse(
+        await tools.loop_schedule.execute(
+          { action: "set_fixed", taskId: candidate.id, intervalMs },
+          mockCtx(SID_A, dir)
+        )
+      )
+      assert.equal(rejected.ok, false)
+      assert.deepEqual(store.get(candidate.id), before)
+    }
+
+    const fixed = await store.create({
+      prompt: "already fixed",
+      mode: "fixed",
+      intervalMs: 60_000,
+      directory: dir,
+      sessionID: SID_A,
+    })
+    const rejectedMode = JSON.parse(
+      await tools.loop_schedule.execute(
+        { action: "set_fixed", taskId: fixed.id, intervalMs: 120_000 },
+        mockCtx(SID_A, dir)
+      )
+    )
+    assert.equal(rejectedMode.ok, false)
+    assert.match(rejectedMode.error, /adaptive/i)
+    assert.equal(store.get(fixed.id).intervalMs, 60_000)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("loop_schedule set_fixed is session-scoped unless all is true", async () => {
+  const { store, sched, dir } = makeScheduler()
+  try {
+    const tools = await buildLoopTools(store, sched)
+    const task = await store.create({
+      prompt: "owned by B",
+      mode: "adaptive",
+      adaptiveMinMs: 1_000,
+      adaptiveMaxMs: 3_000,
+      directory: dir,
+      sessionID: SID_B,
+    })
+
+    const rejected = JSON.parse(
+      await tools.loop_schedule.execute(
+        { action: "set_fixed", taskId: task.id, intervalMs: 120_000 },
+        mockCtx(SID_A, dir)
+      )
+    )
+    assert.equal(rejected.ok, false)
+    assert.equal(store.get(task.id).mode, "adaptive")
+
+    const allowed = JSON.parse(
+      await tools.loop_schedule.execute(
+        { action: "set_fixed", taskId: task.id, intervalMs: 120_000, all: true },
+        mockCtx(SID_A, dir)
+      )
+    )
+    assert.equal(allowed.ok, true)
+    assert.equal(store.get(task.id).mode, "fixed")
   } finally {
     rmSync(dir, { recursive: true })
   }
@@ -732,6 +979,51 @@ test("plugin: chat.message hook updates active session", async () => {
     const data = JSON.parse(readFileSync(tasksFile, "utf-8"))
     assert.equal(data.tasks[0].sessionID, SID_B)
 
+    await hooks.dispose()
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("plugin: child-agent messages do not steal the active parent session", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-plugin-"))
+  try {
+    const promptCalls = []
+    const client = mockClient(promptCalls)
+    const mod = await import("../dist/index.js")
+    const hooks = await mod.LoopPlugin({
+      client,
+      project: { id: "test" },
+      directory: dir,
+      worktree: dir,
+      $: {},
+      serverUrl: new URL("http://localhost:3000"),
+      experimental_workspace: { register: () => {} },
+      options: { tickerIntervalMs: 10 },
+    })
+
+    await hooks["command.execute.before"](
+      { command: "loop", arguments: "1s taskA", sessionID: SID_A },
+      { parts: [] }
+    )
+    const tasksFile = join(dir, ".opencode/cache/loop/tasks.json")
+    const data = JSON.parse(readFileSync(tasksFile, "utf-8"))
+    data.tasks[0].nextDueAt = Date.now() - 1
+    writeFileSync(tasksFile, JSON.stringify(data), "utf-8")
+    await hooks.event({ event: { type: "session.compacted" } })
+
+    const childID = "sess-child-agent"
+    await hooks.event({
+      event: {
+        type: "session.created",
+        properties: { info: { id: childID, parentID: SID_A } },
+      },
+    })
+    await hooks["chat.message"]({ sessionID: childID, agent: "general" })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    assert.equal(promptCalls.length, 1, "due parent task still fires after child activity")
+    assert.equal(promptCalls[0].path.id, SID_A)
     await hooks.dispose()
   } finally {
     rmSync(dir, { recursive: true })
