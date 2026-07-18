@@ -9,7 +9,7 @@ A drop-in `/loop` command for [opencode](https://opencode.ai), modeled after Cla
 ## Features
 
 - **`/loop 5m <prompt>`** — fixed interval (s/m/h/d supported)
-- **`/loop <prompt>`** — adaptive interval with a random 1 min–1 hr fallback that the LLM can override from the execution result
+- **`/loop <prompt>`** — runs immediately in Adaptive mode, then keeps the random fallback, reschedules from the result, or converts a clear recurring cadence to Fixed
 - **`/loop`** — bare: read `.opencode/loop.md` or run built-in maintenance
 - **Per-session scoping** — tasks are bound to a `sessionID`; other sessions never see or fire them
 - **Subcommands** — `list | status | cancel | pause | resume | stop-all` (session-scoped; add `--all` to cross sessions)
@@ -17,7 +17,7 @@ A drop-in `/loop` command for [opencode](https://opencode.ai), modeled after Cla
 - **Inflight guard** — double-set at ticker and `fireTask` level prevents double-firing even if opencode hot-reloads the plugin
 - **Persistent tasks** — survive session restarts; auto-migrated (tasks without `sessionID` are dropped on load)
 - **Auto-cleanup on `session.deleted`** — all tasks for that session are cancelled automatically
-- **Jitter** — deterministic offset based on task ID (matches Claude Code's algorithm)
+- **Configurable Jitter** — deterministic Fixed-task offset, controllable per command, tool call, or programmatic default
 - **Auto-expire** — tasks older than 7 days are removed on load
 - **Max 50 concurrent tasks**
 - **LLM-callable tools** — `loop_schedule`, `loop_status` (session-bound by default)
@@ -105,16 +105,29 @@ Re-run `npm run build` after editing `src/`, then restart OpenCode to load the r
 /loop 5m check if the deploy finished
 /loop 30s ping the health endpoint
 /loop 2h look for failing CI runs
+/loop 2m --jitter=false check the latest package version
 ```
+
+Fixed tasks use deterministic Jitter by default for backward compatibility. Add
+`--jitter=false` for an exact interval or `--jitter=true` to enable it explicitly.
+The flag is scheduling metadata and is removed from the repeated prompt.
 
 ### Adaptive interval (LLM decides next fire time)
 ```
 /loop check whether CI passed and address any review comments
+/loop every two minutes check the latest opencode-plugin-loop version
 ```
 
-Each Adaptive task receives a persisted random fallback time inside the configured 1–60 minute range. On every iteration, the LLM first completes the user request and evaluates the current session state and execution result. It calls `loop_schedule(action="reschedule")` only when that evidence justifies an earlier or later run, leaves the random fallback unchanged when it is suitable, or calls `loop_schedule(action="cancel")` when no future check is useful.
+The natural-language form runs the request immediately in the current model turn. Each Adaptive task first receives a persisted random fallback time inside the configured 1–60 minute range. After completing the request, the LLM classifies the schedule:
 
-The fallback is written before the prompt is injected. A successful `reschedule` therefore replaces the fallback and is not overwritten after the model finishes. An in-range model time is stored exactly without Jitter; only an out-of-range request is clamped to the task's configured minimum or maximum delay. Fixed and Maintenance rescheduling remains unchanged.
+- a clear stable cadence such as “every two minutes” calls `loop_schedule(action="set_fixed", intervalMs=120000)` and becomes a permanent Fixed task;
+- a result-dependent next check calls `loop_schedule(action="reschedule", delayMs=...)`;
+- a suitable fallback is kept by making no scheduling call;
+- a completed task with no useful future check calls `loop_schedule(action="cancel")`.
+
+Adaptive-to-Fixed conversion defaults to `jitterEnabled: false`, so an explicit cadence remains exact.
+
+The fallback is written before the prompt is injected. A successful `reschedule` therefore replaces the fallback and is not overwritten after the model finishes. The preferred `delayMs` is relative to tool-call time, avoiding epoch arithmetic. An in-range model delay is stored exactly without Jitter; only an out-of-range request is clamped to the task's configured minimum or maximum delay. Fixed and Maintenance rescheduling remains unchanged. The legacy absolute `nextDueAtMs` remains supported, but passing it together with `delayMs` returns an error without changing the task.
 
 ### Bare `/loop` — custom default prompt
 Create `.opencode/loop.md` (project) or `<user>/.opencode/loop.md` (user) with your maintenance instructions:
@@ -173,7 +186,14 @@ loop_schedule({
 loop_schedule({
   action: "reschedule",
   taskId: "abc12345",
-  nextDueAtMs: Date.now() + 5 * 60_000,
+  delayMs: 5 * 60_000,
+})
+
+loop_schedule({
+  action: "set_fixed",
+  taskId: "abc12345",
+  intervalMs: 2 * 60_000,
+  jitterEnabled: false, // default for Adaptive-to-Fixed conversion
 })
 
 loop_status({})               // current session only
@@ -194,10 +214,18 @@ The built-in runtime defaults are:
 | Task expiry | 7 days |
 | Adaptive fallback range | 1 minute to 1 hour |
 | Scheduler ticker | 5 seconds |
+| New Fixed-task Jitter | enabled |
 
 Adaptive minimum and maximum delays are persisted on each task. The random fallback
 and any model-requested `reschedule` are both constrained by that task's bounds. Jitter
 is not added to a model-selected Adaptive time.
+
+For programmatic composition, `LoopConfig.defaultJitterEnabled` controls newly
+created Fixed tasks and defaults to `true`. An explicit command
+`--jitter=true|false` or tool argument `jitterEnabled` overrides that default.
+Existing persisted Fixed tasks without a `jitterEnabled` field retain the legacy
+Jitter-on behavior. Because the ticker checks every 5 seconds, actual prompt
+injection can occur up to one ticker period after an exact due time.
 
 ## Per-session architecture
 
