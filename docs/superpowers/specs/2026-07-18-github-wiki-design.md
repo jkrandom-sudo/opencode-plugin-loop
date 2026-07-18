@@ -70,7 +70,7 @@ Purpose: explain the minimum architecture and workflow needed to contribute safe
 Content:
 
 - Server and TUI entrypoints and the backward-compatible root export.
-- Per-session task ownership, active-session scheduling, the 15-second ticker, persistence, jitter, TTL cleanup, and inflight guards.
+- Per-session task ownership, active-session scheduling, the 5-second default ticker, persistence, jitter, TTL cleanup, and inflight guards.
 - Source installation and file-plugin registration.
 - Build, test, and local OpenCode verification commands.
 - Key source files grouped by scheduler, store, tools, TUI feedback, dialog interaction, layout, and view responsibilities.
