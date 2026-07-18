@@ -13,6 +13,8 @@ export interface LoopTask {
   mode: TaskMode
   /** Interval in milliseconds (fixed mode only) */
   intervalMs?: number
+  /** Whether Fixed scheduling adds deterministic Jitter. Missing means enabled. */
+  jitterEnabled?: boolean
   /** Adaptive bounds (adaptive mode only) */
   adaptiveMinMs?: number
   adaptiveMaxMs?: number
@@ -53,6 +55,7 @@ export interface CreateTaskInput {
   prompt: string
   mode: TaskMode
   intervalMs?: number
+  jitterEnabled?: boolean
   adaptiveMinMs?: number
   adaptiveMaxMs?: number
   source?: LoopTask["source"]

@@ -51,6 +51,12 @@ interface LoopStoreInstance {
   getOrphanedTasks(): LoopTask[]
   markFired(id: string, nextDueAt?: number): Promise<LoopTask | null>
   reschedule(id: string, nextDueAt: number): Promise<LoopTask | null>
+  setFixed(
+    id: string,
+    intervalMs: number,
+    jitterEnabled: boolean,
+    now?: number
+  ): Promise<LoopTask | null>
   setPaused(id: string, paused: boolean): Promise<LoopTask | null>
   logFire(task: LoopTask, success: boolean): Promise<void>
 }
@@ -136,6 +142,7 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
         prompt: input.prompt,
         mode: input.mode,
         intervalMs: input.intervalMs,
+        jitterEnabled: input.jitterEnabled,
         adaptiveMinMs: input.adaptiveMinMs,
         adaptiveMaxMs: input.adaptiveMaxMs,
         createdAt: now,
@@ -210,6 +217,19 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
       const task = inst.get(id)
       if (!task) return null
       task.nextDueAt = nextDueAt
+      await inst.persist()
+      return task
+    },
+    setFixed: async (id, intervalMs, jitterEnabled, now = Date.now()) => {
+      const task = inst.get(id)
+      if (!task) return null
+      task.mode = "fixed"
+      task.intervalMs = intervalMs
+      task.jitterEnabled = jitterEnabled
+      delete task.adaptiveMinMs
+      delete task.adaptiveMaxMs
+      task.lastFiredAt = now
+      task.nextDueAt = now + intervalMs
       await inst.persist()
       return task
     },
