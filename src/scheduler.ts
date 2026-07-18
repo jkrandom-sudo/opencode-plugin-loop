@@ -37,6 +37,8 @@ export interface SchedulerOptions {
 export interface CommandParseResult {
   message: string
   task?: LoopTask
+  /** Replacement prompt for the current model turn (natural Adaptive creation only). */
+  modelPrompt?: string
 }
 
 interface SchedulerInstance {
@@ -177,8 +179,13 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
           sessionID,
         })
         await inst.rearmAdaptive(task)
+        await inst.opts.store.markFired(task.id, task.nextDueAt)
         return {
           task,
+          modelPrompt: buildAdaptiveExecutionPrompt(task, {
+            minMs: inst.opts.adaptiveMinMs,
+            maxMs: inst.opts.adaptiveMaxMs,
+          }),
           message: `🔁 Loop started (adaptive ${inst.opts.adaptiveMinMs / 1000}s–${inst.opts.adaptiveMaxMs / 1000}s): "${trimmed.slice(0, 50)}${trimmed.length > 50 ? "..." : ""}" [id=${task.id}] [s=${sessionID.slice(0, 8)}]. Cancel: \`/loop cancel ${task.id}\``,
         }
       }

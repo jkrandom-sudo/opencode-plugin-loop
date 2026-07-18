@@ -38,12 +38,15 @@ export function createLoopLogger(client: PluginInput["client"]): LoopLogger {
   }
 }
 
-export function consumeLoopCommand(parts: Part[]): void {
+export function consumeLoopCommand(
+  parts: Part[],
+  replacement: string = HANDLED_COMMAND_PROMPT
+): void {
   let replaced = false
   for (const part of parts) {
     if (part.type !== "text") continue
     if (!replaced) {
-      part.text = HANDLED_COMMAND_PROMPT
+      part.text = replacement
       part.synthetic = true
       replaced = true
       continue

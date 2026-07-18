@@ -49,17 +49,25 @@ test("/loop <prompt> → adaptive mode", async () => {
     assert.equal(r.task.adaptiveMinMs, 60_000)
     assert.equal(r.task.adaptiveMaxMs, 3_600_000)
     assert.equal(r.task.sessionID, "s1")
+    assert.ok(r.task.lastFiredAt > 0, "initial model turn is recorded as the first execution")
+    assert.match(r.modelPrompt, /check the deploy/)
+    assert.match(r.modelPrompt, new RegExp(r.task.id))
+    assert.match(r.modelPrompt, /set_fixed/)
+    assert.match(r.modelPrompt, /delayMs/)
   } finally {
     rmSync(dir, { recursive: true })
   }
 })
 
 test("/loop <prompt> persists a random adaptive fallback on creation", async () => {
-  const { sched, dir } = makeScheduler(undefined, () => 0.5)
+  const { sched, store, dir } = makeScheduler(undefined, () => 0.5)
   try {
     const r = await sched.handleUserCommand("check the deploy", "/tmp", "s1")
     const delay = r.task.nextDueAt - r.task.createdAt
     assert.ok(delay >= 1_830_000 && delay < 1_830_100, `unexpected midpoint delay ${delay}`)
+    const stored = store.get(r.task.id)
+    assert.equal(stored.nextDueAt, r.task.nextDueAt, "initial execution preserves the fallback")
+    assert.ok(stored.lastFiredAt > 0)
   } finally {
     rmSync(dir, { recursive: true })
   }

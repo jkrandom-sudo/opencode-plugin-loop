@@ -146,7 +146,6 @@ export const LoopPlugin: Plugin = async (ctx) => {
     "command.execute.before": async (input, output) => {
       if (input.command !== "loop") return
       setActive(input.sessionID)
-      consumeLoopCommand(output.parts)
       const args = input.arguments || ""
       let result
       try {
@@ -154,6 +153,7 @@ export const LoopPlugin: Plugin = async (ctx) => {
       } catch (error) {
         result = { message: `❌ /loop failed: ${errorMessage(error)}` }
       }
+      consumeLoopCommand(output.parts, result.modelPrompt)
       await logger(result.message.startsWith("❌") ? "error" : "info", result.message, {
         sessionID: input.sessionID,
         action: commandAction(args),
