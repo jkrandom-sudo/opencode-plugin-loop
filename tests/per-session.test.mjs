@@ -596,6 +596,220 @@ test("loop_schedule chooses a random fallback when adaptive reschedule omits tim
   }
 })
 
+test("loop_schedule reschedules adaptive tasks from a relative delay without jitter", async () => {
+  const { store, sched, dir } = makeScheduler(() => 0.5)
+  try {
+    const tools = await buildLoopTools(store, sched)
+    const task = await store.create({
+      prompt: "relative",
+      mode: "adaptive",
+      adaptiveMinMs: 1_000,
+      adaptiveMaxMs: 3_000,
+      directory: dir,
+      sessionID: SID_A,
+    })
+
+    const started = Date.now()
+    const result = JSON.parse(
+      await tools.loop_schedule.execute(
+        { action: "reschedule", taskId: task.id, delayMs: 2_000 },
+        mockCtx(SID_A, dir)
+      )
+    )
+
+    assert.equal(result.requestedDelayMs, 2_000)
+    assert.equal(result.effectiveDelayMs, 2_000)
+    assert.ok(Date.parse(result.task.nextDueAt) >= started + 2_000)
+    assert.ok(Date.parse(result.task.nextDueAt) <= Date.now() + 2_000)
+
+    const belowStarted = Date.now()
+    const below = JSON.parse(
+      await tools.loop_schedule.execute(
+        { action: "reschedule", taskId: task.id, delayMs: 100 },
+        mockCtx(SID_A, dir)
+      )
+    )
+    assert.equal(below.requestedDelayMs, 100)
+    assert.equal(below.effectiveDelayMs, 1_000)
+    assert.ok(Date.parse(below.task.nextDueAt) >= belowStarted + 1_000)
+
+    const aboveStarted = Date.now()
+    const above = JSON.parse(
+      await tools.loop_schedule.execute(
+        { action: "reschedule", taskId: task.id, delayMs: 10_000 },
+        mockCtx(SID_A, dir)
+      )
+    )
+    assert.equal(above.requestedDelayMs, 10_000)
+    assert.equal(above.effectiveDelayMs, 3_000)
+    assert.ok(Date.parse(above.task.nextDueAt) >= aboveStarted + 3_000)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("loop_schedule rejects relative and absolute reschedule times together without mutation", async () => {
+  const { store, sched, dir } = makeScheduler()
+  try {
+    const tools = await buildLoopTools(store, sched)
+    const task = await store.create({
+      prompt: "conflict",
+      mode: "adaptive",
+      adaptiveMinMs: 1_000,
+      adaptiveMaxMs: 3_000,
+      directory: dir,
+      sessionID: SID_A,
+    })
+    const before = task.nextDueAt
+    const result = JSON.parse(
+      await tools.loop_schedule.execute(
+        {
+          action: "reschedule",
+          taskId: task.id,
+          delayMs: 2_000,
+          nextDueAtMs: Date.now() + 2_500,
+        },
+        mockCtx(SID_A, dir)
+      )
+    )
+
+    assert.equal(result.ok, false)
+    assert.match(result.error, /mutually exclusive/i)
+    assert.equal(store.get(task.id).nextDueAt, before)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("loop_schedule set_fixed converts adaptive tasks and defaults jitter off", async () => {
+  const { store, sched, dir } = makeScheduler()
+  try {
+    const tools = await buildLoopTools(store, sched)
+    const task = await store.create({
+      prompt: "every two minutes",
+      mode: "adaptive",
+      adaptiveMinMs: 60_000,
+      adaptiveMaxMs: 3_600_000,
+      directory: dir,
+      sessionID: SID_A,
+    })
+    const started = Date.now()
+    const result = JSON.parse(
+      await tools.loop_schedule.execute(
+        { action: "set_fixed", taskId: task.id, intervalMs: 120_000 },
+        mockCtx(SID_A, dir)
+      )
+    )
+
+    assert.equal(result.ok, true)
+    assert.equal(result.task.mode, "fixed")
+    assert.equal(result.task.intervalMs, 120_000)
+    assert.equal(result.task.jitterEnabled, false)
+    assert.equal(Date.parse(result.task.nextDueAt) - result.task.lastFiredAt, 120_000)
+    assert.ok(result.task.lastFiredAt >= started)
+    assert.equal(store.get(task.id).adaptiveMinMs, undefined)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("loop_schedule set_fixed accepts explicit jitter and enforces validation", async () => {
+  const { store, sched, dir } = makeScheduler()
+  try {
+    const tools = await buildLoopTools(store, sched)
+    const makeAdaptive = () =>
+      store.create({
+        prompt: "convert",
+        mode: "adaptive",
+        adaptiveMinMs: 1_000,
+        adaptiveMaxMs: 3_000,
+        directory: dir,
+        sessionID: SID_A,
+      })
+
+    const explicit = await makeAdaptive()
+    const converted = JSON.parse(
+      await tools.loop_schedule.execute(
+        {
+          action: "set_fixed",
+          taskId: explicit.id,
+          intervalMs: 5_000,
+          jitterEnabled: true,
+        },
+        mockCtx(SID_A, dir)
+      )
+    )
+    assert.equal(converted.task.jitterEnabled, true)
+
+    for (const intervalMs of [undefined, 999, Number.NaN]) {
+      const candidate = await makeAdaptive()
+      const before = structuredClone(candidate)
+      const rejected = JSON.parse(
+        await tools.loop_schedule.execute(
+          { action: "set_fixed", taskId: candidate.id, intervalMs },
+          mockCtx(SID_A, dir)
+        )
+      )
+      assert.equal(rejected.ok, false)
+      assert.deepEqual(store.get(candidate.id), before)
+    }
+
+    const fixed = await store.create({
+      prompt: "already fixed",
+      mode: "fixed",
+      intervalMs: 60_000,
+      directory: dir,
+      sessionID: SID_A,
+    })
+    const rejectedMode = JSON.parse(
+      await tools.loop_schedule.execute(
+        { action: "set_fixed", taskId: fixed.id, intervalMs: 120_000 },
+        mockCtx(SID_A, dir)
+      )
+    )
+    assert.equal(rejectedMode.ok, false)
+    assert.match(rejectedMode.error, /adaptive/i)
+    assert.equal(store.get(fixed.id).intervalMs, 60_000)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("loop_schedule set_fixed is session-scoped unless all is true", async () => {
+  const { store, sched, dir } = makeScheduler()
+  try {
+    const tools = await buildLoopTools(store, sched)
+    const task = await store.create({
+      prompt: "owned by B",
+      mode: "adaptive",
+      adaptiveMinMs: 1_000,
+      adaptiveMaxMs: 3_000,
+      directory: dir,
+      sessionID: SID_B,
+    })
+
+    const rejected = JSON.parse(
+      await tools.loop_schedule.execute(
+        { action: "set_fixed", taskId: task.id, intervalMs: 120_000 },
+        mockCtx(SID_A, dir)
+      )
+    )
+    assert.equal(rejected.ok, false)
+    assert.equal(store.get(task.id).mode, "adaptive")
+
+    const allowed = JSON.parse(
+      await tools.loop_schedule.execute(
+        { action: "set_fixed", taskId: task.id, intervalMs: 120_000, all: true },
+        mockCtx(SID_A, dir)
+      )
+    )
+    assert.equal(allowed.ok, true)
+    assert.equal(store.get(task.id).mode, "fixed")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
 test("loop_schedule keeps fixed reschedule times unrestricted", async () => {
   const { store, sched, dir } = makeScheduler(() => 0.5)
   try {
