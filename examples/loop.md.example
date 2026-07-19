@@ -10,5 +10,5 @@ quiet, say so in one line.
 After completing the work, call:
   loop_schedule({ action: "cancel", taskId: "<your task id>" })
 to end the loop, OR
-  loop_schedule({ action: "reschedule", taskId: "<your task id>", nextDueAtMs: Date.now() + 5*60*1000 })
+  loop_schedule({ action: "reschedule", taskId: "<your task id>", delayMs: 5*60*1000 })
 to continue checking.

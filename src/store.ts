@@ -148,7 +148,9 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
           return
         }
         const cutoff = Date.now() - inst.taskTtlMs
-        const filtered = parsed.tasks.filter((t) => t.createdAt > cutoff && !!t.sessionID && !tombstones.has(t.id))
+        // B4: expire by last ACTIVITY, not creation — a task that keeps
+        // firing must not be dropped just because it was created 7 days ago.
+        const filtered = parsed.tasks.filter((t) => Math.max(t.createdAt, t.lastFiredAt ?? 0) > cutoff && !!t.sessionID && !tombstones.has(t.id))
         // Tombstone load-time deletions (expired/orphan) so merge-write
         // cannot resurrect them on the persist below.
         for (const t of parsed.tasks) {

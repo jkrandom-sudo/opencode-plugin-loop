@@ -734,3 +734,48 @@ test("logFire appends without rewriting and rotates at 1MB", async () => {
     rmSync(dir, { recursive: true })
   }
 })
+
+test("TTL uses last activity: old-but-active tasks survive (B4)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-test-"))
+  try {
+    const now = Date.now()
+    const data = {
+      version: 1,
+      ...currentProcess(),
+      tasks: [
+        {
+          id: "active-old",
+          prompt: "created 8d ago, fired recently",
+          mode: "fixed",
+          intervalMs: 60_000,
+          createdAt: now - 8 * 86_400_000,
+          lastFiredAt: now - 60_000,
+          nextDueAt: now + 60_000,
+          source: "user",
+          directory: "/tmp",
+          sessionID: "s1",
+          paused: false,
+        },
+        {
+          id: "dead-old",
+          prompt: "created 8d ago, never fired",
+          mode: "fixed",
+          intervalMs: 60_000,
+          createdAt: now - 8 * 86_400_000,
+          lastFiredAt: 0,
+          nextDueAt: now + 60_000,
+          source: "user",
+          directory: "/tmp",
+          sessionID: "s1",
+          paused: false,
+        },
+      ],
+    }
+    writeFileSync(join(dir, "tasks.json"), JSON.stringify(data), "utf-8")
+    const store = new LoopStore({ storageDir: dir, taskTtlMs: 7 * 86_400_000 })
+    await store.load()
+    assert.deepEqual(store.list().map((t) => t.id), ["active-old"])
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})

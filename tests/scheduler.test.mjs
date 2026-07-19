@@ -502,3 +502,57 @@ test("usage errors are in English", async () => {
     rmSync(dir, { recursive: true })
   }
 })
+
+// --- c3: scheduling semantics ---
+
+test("bare /loop maintenance runs immediately and re-arms on the slow cycle", async () => {
+  const { sched, store, dir } = makeScheduler()
+  try {
+    const before = Date.now()
+    const r = await sched.handleUserCommand("", "/tmp", "s1")
+    assert.equal(r.task.mode, "maintenance")
+    assert.ok(r.modelPrompt, "maintenance prompt runs in the current turn")
+    assert.match(r.message, /Running now/)
+    const t = store.get(r.task.id)
+    assert.ok(t.lastFiredAt >= before, "marked as fired")
+    assert.ok(t.nextDueAt >= before + 3_500_000, "next run ~1h out")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("resume re-arms adaptive and maintenance tasks instead of catch-up firing (B6)", async () => {
+  const { sched, store, dir } = makeScheduler()
+  try {
+    const a = await sched.handleUserCommand("check things", "/tmp", "s1")
+    await store.reschedule(a.task.id, Date.now() - 60_000)
+    await sched.handleUserCommand(`pause ${a.task.id}`, "/tmp", "s1")
+    const rr = await sched.handleUserCommand(`resume ${a.task.id}`, "/tmp", "s1")
+    assert.match(rr.message, /Resumed/)
+    const after = store.get(a.task.id)
+    assert.ok(after.nextDueAt > Date.now(), "adaptive re-armed into the future")
+
+    const m = await sched.handleUserCommand("", "/tmp", "s1")
+    await store.reschedule(m.task.id, Date.now() - 60_000)
+    await sched.handleUserCommand(`pause ${m.task.id}`, "/tmp", "s1")
+    await sched.handleUserCommand(`resume ${m.task.id}`, "/tmp", "s1")
+    const mAfter = store.get(m.task.id)
+    assert.ok(mAfter.nextDueAt > Date.now() + 3_500_000, "maintenance re-armed ~1h out")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("fixed tasks re-arm from fire start, not fire completion (no drift)", async () => {
+  const { sched, store, dir } = makeScheduler()
+  try {
+    const r = await sched.handleUserCommand("60s --jitter=false say hi", "/tmp", "s1")
+    const t0 = 1_800_000_000_000
+    const mockCtx = { client: { session: { async prompt() { return { info: {}, parts: [] } } } } }
+    await sched.executeTask(store.get(r.task.id), mockCtx, t0)
+    const after = store.get(r.task.id)
+    assert.equal(after.nextDueAt, t0 + 60_000, "next fire anchored to fire start")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})

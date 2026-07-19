@@ -223,9 +223,13 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
           source: "default",
           sessionID,
         })
+        // Run the maintenance prompt immediately in this turn (matching
+        // Adaptive's run-now behavior), then re-arm on the slow cycle.
+        await inst.opts.store.markFired(task.id, Date.now() + inst.opts.adaptiveMaxMs)
         return {
           task,
-          message: `🔁 Loop started (maintenance mode): task ${task.id} (session ${sessionID.slice(0, 8)}). Auto re-arms every ${inst.opts.adaptiveMaxMs / 1000}s. Use \`/loop cancel ${task.id}\` to stop.`,
+          modelPrompt: prompt,
+          message: `🔁 Loop started (maintenance mode): task ${task.id} (session ${sessionID.slice(0, 8)}). Running now; then re-arms every ${inst.opts.adaptiveMaxMs / 1000}s. Use \`/loop cancel ${task.id}\` to stop.`,
         }
       }
 
@@ -339,8 +343,16 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
         }
       }
       const r = await inst.opts.store.setPaused(id, false)
-      if (r && r.mode === "fixed" && r.intervalMs) {
-        await inst.rearmFixed(r)
+      if (r) {
+        // Re-arm per mode (B6): without this, adaptive/maintenance tasks keep
+        // a stale nextDueAt and catch-up fire immediately on resume.
+        if (r.mode === "fixed" && r.intervalMs) {
+          await inst.rearmFixed(r)
+        } else if (r.mode === "adaptive") {
+          await inst.rearmAdaptive(r)
+        } else if (r.mode === "maintenance" && r.adaptiveMaxMs) {
+          await inst.opts.store.reschedule(r.id, Date.now() + r.adaptiveMaxMs)
+        }
       }
       return { message: r ? `▶ Resumed ${id}` : `❌ No task ${id}` }
     },
@@ -424,8 +436,11 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
         return
       }
 
+      // Wall-clock scheduling: the next cycle is anchored to when this fire
+      // STARTED, so long-running model turns do not inflate the interval.
+      const fireStartedAt = now ?? Date.now()
       await inst.fireTask(task, ctx)
-      const next = await inst.nextDueAt(task, now ?? Date.now())
+      const next = await inst.nextDueAt(task, fireStartedAt)
       await inst.opts.store.markFired(task.id, next)
     },
 
@@ -527,4 +542,4 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
  */
 export const DEFAULT_MAINTENANCE_PROMPT = `Continue any unfinished work from this conversation. Tend to the current branch's pull request: review comments, failed CI runs, merge conflicts. Run cleanup passes such as bug hunts or simplification when nothing else is pending.
 
-Do not start new initiatives outside the above scope. Irreversible actions such as pushing or deleting only proceed when they continue something the transcript already authorized. After completing the work, call loop_schedule(action="cancel", taskId="<your id>") to end the loop, or call loop_schedule(action="reschedule", taskId="<your id>", nextDueAtMs=<pick a value between 60000 and 3600000>) to continue.`
+Do not start new initiatives outside the above scope. Irreversible actions such as pushing or deleting only proceed when they continue something the transcript already authorized. After completing the work, call loop_schedule(action="cancel", taskId="<your id>") to end the loop, or call loop_schedule(action="reschedule", taskId="<your id>", delayMs=<a relative delay between 60000 and 3600000>) to continue.`

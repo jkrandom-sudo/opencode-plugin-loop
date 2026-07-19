@@ -121,8 +121,15 @@ export async function buildLoopTools(
               })
             }
             const r = await store.setPaused(args.taskId, false)
-            if (r && r.mode === "fixed" && r.intervalMs) {
-              await scheduler.rearmFixed(r)
+            if (r) {
+              // Re-arm per mode (B6), same as /loop resume.
+              if (r.mode === "fixed" && r.intervalMs) {
+                await scheduler.rearmFixed(r)
+              } else if (r.mode === "adaptive") {
+                await scheduler.rearmAdaptive(r)
+              } else if (r.mode === "maintenance" && r.adaptiveMaxMs) {
+                await store.reschedule(r.id, Date.now() + r.adaptiveMaxMs)
+              }
             }
             return JSON.stringify({ ok: !!r, task: r }, null, 2)
           }
@@ -147,8 +154,9 @@ export async function buildLoopTools(
                 args.jitterEnabled ?? scheduler.opts.defaultJitterEnabled ?? true
             }
             if (mode === "adaptive") {
-              input.adaptiveMinMs = 60_000
-              input.adaptiveMaxMs = 3_600_000
+              // B5: honor the configured adaptive bounds instead of hardcoding.
+              input.adaptiveMinMs = scheduler.opts.adaptiveMinMs
+              input.adaptiveMaxMs = scheduler.opts.adaptiveMaxMs
             }
             const task = await store.create(input)
             if (task.mode === "adaptive") await scheduler.rearmAdaptive(task)
@@ -251,6 +259,9 @@ export async function buildLoopTools(
               args.intervalMs as number,
               args.jitterEnabled ?? false
             )
+            // B7: apply the configured jitter policy to the FIRST cycle too,
+            // so conversion and later re-arms behave identically.
+            if (r) await scheduler.rearmFixed(r)
             return JSON.stringify(
               {
                 ok: !!r,
