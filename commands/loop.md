@@ -1,6 +1,6 @@
 ---
-description: 定时重复执行 prompt。自然语言 Adaptive 请求会立即执行并判断后续调度；显式间隔支持 --jitter=true|false。子命令加 --all 可跨 session。
-argument-hint: "[5m] [--jitter=true|false] [prompt text... | list | cancel <id> | pause <id> | resume <id> | stop-all] [--all]"
+description: Run prompts on a schedule. Natural-language Adaptive requests run immediately and the model decides the next check; explicit intervals support --jitter=true|false and --once. Subcommands add --all to cross sessions. See /loop help.
+argument-hint: "[5m] [--jitter=true|false] [--once] [prompt text... | help | list | cancel <id> | pause <id> | resume <id> | stop-all] [--all]"
 agent: build
 ---
 

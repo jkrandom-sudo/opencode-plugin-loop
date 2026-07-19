@@ -2,24 +2,31 @@
 
 [![npm version](https://img.shields.io/npm/v/opencode-plugin-loop.svg)](https://www.npmjs.com/package/opencode-plugin-loop)
 [![npm downloads](https://img.shields.io/npm/dm/opencode-plugin-loop.svg)](https://www.npmjs.com/package/opencode-plugin-loop)
+[![CI](https://github.com/jkrandom-sudo/opencode-plugin-loop/actions/workflows/ci.yml/badge.svg)](https://github.com/jkrandom-sudo/opencode-plugin-loop/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/jkrandom-sudo/opencode-plugin-loop/blob/main/LICENSE)
 
 A drop-in `/loop` command for [opencode](https://opencode.ai), modeled after Claude Code's `/loop`. Each `/loop` task is bound to the session that created it — never leaks to other sessions.
+
+> **Upgrading to 0.4.0?** Two behavior changes to know about: (1) since 0.3.0, tasks die with the opencode process by default (`ephemeralTasks: false` restores persistence) — the upgrade drops the pre-0.3.0 `tasks.json` once; (2) scheduling-like input that used to silently create an Adaptive task (cron syntax, bare intervals like `/loop 5m`, unknown flags) now returns an explicit error pointing at `/loop help`.
 
 ## Features
 
 - **`/loop 5m <prompt>`** — fixed interval (s/m/h/d supported)
 - **`/loop <prompt>`** — runs immediately in Adaptive mode, then keeps the random fallback, reschedules from the result, or converts a clear recurring cadence to Fixed
-- **`/loop`** — bare: read `.opencode/loop.md` or run built-in maintenance
+- **`/loop`** — bare: read `.opencode/loop.md` or run built-in maintenance, immediately
+- **`/loop 30s --once <prompt>`** — one-shot: fires once, then auto-cancels
+- **`/loop help`** — full usage, flags, and examples in the terminal
+- **Claude Code-style flags** — `--cancel/--list/--status/--pause/--resume/--stop/--stop-all` map to the matching subcommand
 - **Per-session scoping** — tasks are bound to a `sessionID`; other sessions never see or fire them
 - **Subcommands** — `list | status | cancel | pause | resume | stop-all` (session-scoped; add `--all` to cross sessions)
 - **Internal ticker** — 5s loop drives task firing (no longer depends on `session.idle` events)
+- **Single-leader instance lock** — when several plugin instances share one `tasks.json` (case-variant plugin paths, per-command `opencode run` instances), only the leader fires; merge-writes prevent task loss
 - **Inflight guard** — double-set at ticker and `fireTask` level prevents double-firing even if opencode hot-reloads the plugin
-- **Persistent tasks** — survive session restarts; auto-migrated (tasks without `sessionID` are dropped on load)
+- **Wall-clock scheduling** — fixed tasks anchor to fire start; model-turn duration never inflates the interval
 - **Ephemeral lifecycle (default)** — tasks die with the OpenCode process and are dropped on the next start, matching Claude Code's `/loop`. Set `ephemeralTasks: false` to persist tasks across process restarts
 - **Auto-cleanup on `session.deleted`** — all tasks for that session are cancelled automatically
 - **Configurable Jitter** — deterministic Fixed-task offset, controllable per command, tool call, or programmatic default
-- **Auto-expire** — tasks older than 7 days are removed on load
+- **Auto-expire** — tasks idle for more than 7 days are removed on load (active tasks never expire)
 - **Max 50 concurrent tasks**
 - **LLM-callable tools** — `loop_schedule`, `loop_status` (session-bound by default)
 - **Interactive Loop results** — `/loop` results open in a dedicated native dialog instead of writing over the prompt
@@ -59,6 +66,14 @@ opencode plugin opencode-plugin-loop --global --force
 
 The `--force` flag replaces the installed plugin version and refreshes both global config entries without requiring a version-number change. Restart OpenCode after the command completes.
 
+**Upgrade self-check.** opencode keeps its own plugin package cache at `~/.cache/opencode/packages`, and `--force` does not always refresh it. If an upgrade reports success but behavior does not change (e.g. `npm view opencode-plugin-loop version` disagrees with what you see), clear the cache and restart:
+
+```bash
+rm -rf ~/.cache/opencode/packages/opencode-plugin-loop*
+```
+
+Then verify with `/loop help` — new flags and subcommands show up there immediately.
+
 ### Option 2: Manual configuration
 
 Add the same package name to the `plugin` array in both configuration files.
@@ -70,7 +85,7 @@ Server config (`~/.config/opencode/opencode.json`):
   "plugin": ["opencode-plugin-loop"],
   "command": {
     "loop": {
-      "description": "定时重复执行 prompt。可选间隔: s/m/h/d。子命令: list | status | cancel <id> | pause <id> | resume <id> | stop-all（加 --all 跨 session）",
+      "description": "Run prompts on a schedule. Intervals: s/m/h/d. Subcommands: help | list | status | cancel <id> | pause <id> | resume <id> | stop-all (add --all to cross sessions)",
       "template": "$ARGUMENTS",
       "agent": "build"
     }
@@ -107,6 +122,7 @@ Re-run `npm run build` after editing `src/`, then restart OpenCode to load the r
 /loop 30s ping the health endpoint
 /loop 2h look for failing CI runs
 /loop 2m --jitter=false check the latest package version
+/loop 30s --once remind me to stretch   # one-shot: fires once, then auto-cancels
 ```
 
 Fixed tasks use deterministic Jitter by default for backward compatibility. Add
@@ -143,18 +159,33 @@ address each one. If everything is green, say so in one line.
 All subcommands are **session-scoped by default**. Add `--all` to operate across all sessions.
 
 ```
+/loop help                              # full usage, flags, and examples
 /loop list                              # show tasks in current session
 /loop list --all                        # show all sessions (with [s:xxxx] tags)
 /loop status                            # alias for list
 /loop cancel <taskId>                   # cancel one task in current session
 /loop cancel <taskId> --all             # override scope
 /loop pause <taskId>                     # pause one
-/loop resume <taskId>                    # resume one (re-arms fixed interval)
+/loop resume <taskId>                    # resume one (re-arms per mode)
 /loop stop-all                          # cancel all tasks in current session
 /loop stop-all --all                    # cancel ALL tasks across sessions
 ```
 
 If you try `cancel <id>` for a task owned by another session, you'll get a refusal with a hint to add `--all`. The same strict scoping applies to `loop_schedule` and `loop_status` tools.
+
+### Migrating from Claude Code
+
+| Claude Code `/loop` | opencode-plugin-loop |
+|---|---|
+| `/loop 5m <prompt>` | identical |
+| `/loop <prompt>` (self-paced) | Adaptive: runs now, model picks the next check (fallback 1m–1h) |
+| cancel/list via cron tools | `/loop cancel <id>`, `/loop list` |
+| `--cancel`, `--list`, `--stop` | accepted — mapped to `cancel`, `list`, `stop` |
+| one-off reminder ("in 30m tell me X") | `/loop 30s --once <prompt>` |
+| jobs die when the session ends | same default since 0.3.0 (`ephemeralTasks: false` opts out) |
+| cron expressions (`*/5 * * * *`) | not supported — use `5m` form (explicit error) |
+
+Two behavioral differences worth knowing: tasks only fire for the **currently active session** (switch sessions and the others wait; switch back and they catch up once), and fixed tasks fire on a 5-second ticker rather than exact wall-clock cron times (up to one ticker period late).
 
 ### Interactive result dialog
 
