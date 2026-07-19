@@ -259,14 +259,16 @@ export async function buildLoopTools(
                 error: "set_fixed requires an Adaptive task",
               })
             }
+            // B7: apply the configured jitter policy to the FIRST cycle too,
+            // so conversion and later re-arms behave identically.
+            const conversionTime = Date.now()
             const r = await store.setFixed(
               args.taskId,
               args.intervalMs as number,
-              args.jitterEnabled ?? false
+              args.jitterEnabled ?? false,
+              conversionTime
             )
-            // B7: apply the configured jitter policy to the FIRST cycle too,
-            // so conversion and later re-arms behave identically.
-            if (r) await scheduler.rearmFixed(r)
+            if (r) await scheduler.rearmFixed(r, conversionTime)
             return JSON.stringify(
               {
                 ok: !!r,

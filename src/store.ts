@@ -242,7 +242,9 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
         directory: input.directory,
         sessionID: input.sessionID,
         paused: false,
-        once: input.once,
+        // Only present on one-shot tasks — keeps persisted JSON stable for
+        // tasks that never use the field.
+        ...(input.once ? { once: true as const } : {}),
       }
       inst.state.tasks.push(task)
       dirtyIds.add(task.id)
