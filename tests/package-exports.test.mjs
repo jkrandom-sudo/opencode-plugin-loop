@@ -13,8 +13,8 @@ const builtDialogView = await readFile(
   "utf8",
 )
 
-test("publishes the Adaptive scheduling release", () => {
-  assert.equal(packageJson.version, "0.2.11")
+test("publishes the ephemeral lifecycle release", () => {
+  assert.equal(packageJson.version, "0.3.0")
 })
 
 test("publishes explicit server and TUI plugin entrypoints", () => {
