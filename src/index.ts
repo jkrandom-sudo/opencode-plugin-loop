@@ -54,7 +54,7 @@ const DEFAULT_CONFIG: Required<LoopConfig> = {
 function commandAction(args: string): string {
   const head = args.trim().split(/\s+/, 1)[0]?.toLowerCase()
   if (!head) return "maintenance"
-  if (["list", "status", "cancel", "stop", "pause", "resume", "stop-all"].includes(head)) {
+  if (["list", "status", "cancel", "stop", "pause", "resume", "stop-all", "help"].includes(head)) {
     return head
   }
   return "schedule"

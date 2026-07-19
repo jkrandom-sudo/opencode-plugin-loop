@@ -79,6 +79,68 @@ function extractJitterFlag(text: string): { prompt: string; jitterEnabled?: bool
   }
 }
 
+/** Strip one layer of matching surrounding quotes (B10). */
+function stripOuterQuotes(text: string): string {
+  const t = text.trim()
+  if (t.length >= 2) {
+    const first = t[0]
+    const last = t[t.length - 1]
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      return t.slice(1, -1).trim()
+    }
+  }
+  return t
+}
+
+/** Claude Code-style flags accepted as subcommand aliases (P-1). */
+const CC_FLAG_MAP: Record<string, string> = {
+  "--cancel": "cancel",
+  "--stop": "stop",
+  "--list": "list",
+  "--status": "status",
+  "--pause": "pause",
+  "--resume": "resume",
+  "--stop-all": "stop-all",
+}
+
+/** Flags that are meaningful in command position (not errors when leading). */
+const LEADING_OK = new Set(["--all", "--jitter=true", "--jitter=false", "--once"])
+
+/** crude cron-expression detector (five-field crontab syntax) (B9). */
+function looksLikeCron(tokens: string[]): boolean {
+  if (tokens.length < 5) return false
+  return tokens.slice(0, 5).every((t) => /^[\d*,/\-]+$/.test(t) && /[*,/\-]|\d/.test(t))
+}
+
+export const LOOP_HELP = `/loop — run prompts on a schedule
+
+Usage:
+  /loop <prompt>                    Adaptive: runs now, the model picks the next check (fallback 1m–1h)
+  /loop <interval> <prompt>         Fixed interval: 30s, 5m, 2h, 1d (min 1s)
+  /loop                             Maintenance mode (uses .opencode/loop.md when present)
+  /loop help                        Show this help
+
+Subcommands (session-scoped; add --all to cross sessions):
+  list | status [--all]             Show loop tasks
+  cancel <id> [--all]               Cancel one task
+  pause <id> [--all]                Pause one task
+  resume <id> [--all]               Resume one task
+  stop-all [--all]                  Cancel all tasks
+
+Flags:
+  --all                             Operate across all sessions
+  --jitter=true|false               Force Jitter on/off for a fixed task
+  --once                            Fire once, then auto-cancel (fixed tasks only)
+
+Claude Code-style flags are accepted too: --cancel, --list, --status,
+--pause, --resume, --stop, --stop-all map to the matching subcommand.
+
+Examples:
+  /loop 5m check the deploy status
+  /loop 30s --once remind me to stretch
+  /loop every two minutes check CI
+  /loop cancel a1b2c3d4`
+
 export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInstance {
   void this
   const logger: LoopLogger = opts.logger ?? (async () => {})
@@ -94,14 +156,32 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
 
     async handleUserCommand(args, directory, sessionID) {
       if (sessionID !== undefined) inst.currentSessionID = sessionID
-      const trimmed = args.trim()
-      const tokens = trimmed.split(/\s+/)
+      const trimmed = stripOuterQuotes(args.trim())
+      const tokens = trimmed === "" ? [] : trimmed.split(/\s+/)
       const allFlag = tokens.includes("--all")
-      const head = tokens[0]?.toLowerCase()
+      let head = tokens[0]?.toLowerCase()
+
+      // Claude Code-style leading flags map to subcommands (P-1).
+      if (head && CC_FLAG_MAP[head]) {
+        head = CC_FLAG_MAP[head]
+        tokens[0] = head
+      } else if (head === "help" || head === "--help" || head === "-h") {
+        return { message: LOOP_HELP }
+      } else if (head?.startsWith("--") && !LEADING_OK.has(head)) {
+        return {
+          message: `❌ Unknown flag "${tokens[0]}". Run \`/loop help\` to see usage.`,
+        }
+      }
+
+      // Leading --all is sugar: `/loop --all list` == `/loop list --all`.
+      if (head === "--all") {
+        tokens.shift()
+        head = tokens[0]?.toLowerCase()
+      }
 
       if (head === "cancel" || head === "stop") {
         const id = tokens[1]
-        if (!id) return { message: "❌ 用法: /loop cancel <taskId> [--all]" }
+        if (!id) return { message: "❌ Usage: /loop cancel <taskId> [--all]" }
         return inst.handleCancel(id, allFlag)
       }
       if (head === "list" || head === "status") {
@@ -112,12 +192,12 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
       }
       if (head === "pause") {
         const id = tokens[1]
-        if (!id) return { message: "❌ 用法: /loop pause <taskId> [--all]" }
+        if (!id) return { message: "❌ Usage: /loop pause <taskId> [--all]" }
         return inst.handlePause(id, allFlag)
       }
       if (head === "resume") {
         const id = tokens[1]
-        if (!id) return { message: "❌ 用法: /loop resume <taskId> [--all]" }
+        if (!id) return { message: "❌ Usage: /loop resume <taskId> [--all]" }
         return inst.handleResume(id, allFlag)
       }
       if (head === "stop-all") {
@@ -150,9 +230,19 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
       }
 
       const { interval, rest } = inst.opts.cron.extractInterval(trimmed)
-      if (interval && rest.trim()) {
+      if (interval) {
         const fixed = extractJitterFlag(rest)
-        if (!fixed.prompt) return { message: "❌ Empty loop command" }
+        // Strip command flags that leaked into the prompt area (B2).
+        fixed.prompt = fixed.prompt
+          .split(/\s+/)
+          .filter((t) => t !== "--all")
+          .join(" ")
+          .trim()
+        if (!fixed.prompt) {
+          return {
+            message: `❌ Missing prompt after interval "${tokens[0]}". Usage: /loop <interval> <prompt> — see \`/loop help\`.`,
+          }
+        }
         const task = await inst.opts.store.create({
           prompt: fixed.prompt,
           mode: "fixed",
@@ -168,9 +258,30 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
         }
       }
 
+      // Reject inputs that look like scheduling syntax but are not supported,
+      // instead of silently creating an Adaptive task out of them.
+      if (looksLikeCron(tokens)) {
+        return {
+          message: `❌ Cron expressions are not supported. Use an interval like \`5m\` instead, e.g. \`/loop 5m ${tokens.slice(5).join(" ") || "check the build"}\`.`,
+        }
+      }
+      if (/^\d/.test(tokens[0] ?? "")) {
+        return {
+          message: `❌ Invalid interval "${tokens[0]}". Use <number>s/m/h/d (min 1s), e.g. 30s, 5m, 2h, 1d — see \`/loop help\`.`,
+        }
+      }
+
       if (trimmed) {
+        // Command flags are scheduling metadata, not prompt text (B2).
+        const prompt = tokens
+          .filter((t) => t !== "--all" && t !== "--jitter=true" && t !== "--jitter=false")
+          .join(" ")
+          .trim()
+        if (!prompt) {
+          return { message: "❌ Empty loop command — see `/loop help`." }
+        }
         const task = await inst.opts.store.create({
-          prompt: trimmed,
+          prompt,
           mode: "adaptive",
           adaptiveMinMs: inst.opts.adaptiveMinMs,
           adaptiveMaxMs: inst.opts.adaptiveMaxMs,
@@ -186,11 +297,11 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
             minMs: inst.opts.adaptiveMinMs,
             maxMs: inst.opts.adaptiveMaxMs,
           }),
-          message: `🔁 Loop started (adaptive ${inst.opts.adaptiveMinMs / 1000}s–${inst.opts.adaptiveMaxMs / 1000}s): "${trimmed.slice(0, 50)}${trimmed.length > 50 ? "..." : ""}" [id=${task.id}] [s=${sessionID.slice(0, 8)}]. Cancel: \`/loop cancel ${task.id}\``,
+          message: `🔁 Loop started (adaptive ${inst.opts.adaptiveMinMs / 1000}s–${inst.opts.adaptiveMaxMs / 1000}s): "${prompt.slice(0, 50)}${prompt.length > 50 ? "..." : ""}" [id=${task.id}] [s=${sessionID.slice(0, 8)}]. Cancel: \`/loop cancel ${task.id}\``,
         }
       }
 
-      return { message: "❌ Empty loop command" }
+      return { message: "❌ Empty loop command — see `/loop help`." }
     },
 
     handleCancel(id, allFlag) {
