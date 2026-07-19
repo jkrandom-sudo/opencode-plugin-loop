@@ -153,6 +153,8 @@ test("legacy tasks without sessionID are dropped on load", async () => {
   try {
     const data = {
       version: 1,
+      pid: process.pid,
+      startedAt: Date.now() - process.uptime() * 1000,
       tasks: [
         {
           id: "orphan1",

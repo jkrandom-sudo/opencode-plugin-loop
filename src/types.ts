@@ -51,6 +51,12 @@ export interface LoopConfig {
   tickerIntervalMs?: number
   /** Default Jitter policy for newly created Fixed tasks (default true) */
   defaultJitterEnabled?: boolean
+  /**
+   * Ephemeral lifecycle (default true, matching Claude Code's /loop): tasks die
+   * with the opencode process and are dropped on the next load. Set to false to
+   * keep the legacy behavior of persisting tasks across process restarts.
+   */
+  ephemeralTasks?: boolean
 }
 
 export interface CreateTaskInput {

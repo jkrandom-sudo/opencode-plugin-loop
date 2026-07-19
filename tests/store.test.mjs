@@ -11,6 +11,10 @@ function makeStore() {
   return { store, dir }
 }
 
+// Fixtures written by hand must carry the current process identity so the
+// ephemeral-lifecycle check (default on) treats them as same-process writes.
+const currentProcess = () => ({ pid: process.pid, startedAt: Date.now() - process.uptime() * 1000 })
+
 test("create + list task", async () => {
   const { store, dir } = makeStore()
   try {
@@ -122,6 +126,7 @@ test("expired tasks filtered on load", async () => {
   try {
     const data = {
       version: 1,
+      ...currentProcess(),
       tasks: [
         {
           id: "expired1",
@@ -167,6 +172,7 @@ test("orphan tasks (no sessionID) are dropped on load", async () => {
   try {
     const data = {
       version: 1,
+      ...currentProcess(),
       tasks: [
         // Legacy task without sessionID
         {
@@ -387,6 +393,7 @@ test("structured logger records task cleanup without console output", async () =
       join(dir, "tasks.json"),
       JSON.stringify({
         version: 1,
+        ...currentProcess(),
         tasks: [
           {
             id: "orphan",
@@ -466,6 +473,150 @@ test("structured logger records corrupted state without console output", async (
     console.log = originalLog
     console.warn = originalWarn
     console.error = originalError
+    rmSync(dir, { recursive: true })
+  }
+})
+
+// --- ephemeral lifecycle (process identity) ---
+
+test("ephemeral: same-process reload keeps tasks", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-test-"))
+  try {
+    const identity = { pid: 4242, startedAt: Date.now() - 10_000 }
+    const s1 = new LoopStore({ storageDir: dir, processIdentity: identity })
+    await s1.load()
+    await s1.create({ prompt: "x", mode: "fixed", intervalMs: 60_000, directory: "/tmp", sessionID: "s1" })
+
+    const s2 = new LoopStore({ storageDir: dir, processIdentity: identity })
+    await s2.load()
+    assert.equal(s2.list().length, 1)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("ephemeral: tasks from a previous process are dropped on load", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-test-"))
+  try {
+    const s1 = new LoopStore({
+      storageDir: dir,
+      processIdentity: { pid: 1111, startedAt: Date.now() - 10_000 },
+    })
+    await s1.load()
+    await s1.create({ prompt: "x", mode: "fixed", intervalMs: 60_000, directory: "/tmp", sessionID: "s1" })
+
+    const logCalls = []
+    const s2 = new LoopStore({
+      storageDir: dir,
+      processIdentity: { pid: 2222, startedAt: Date.now() },
+      logger: async (level, message, extra) => logCalls.push({ level, message, extra }),
+    })
+    await s2.load()
+
+    assert.equal(s2.list().length, 0)
+    assert.equal(s2.state.pid, 2222, "new process identity adopted")
+    assert.equal(logCalls.length, 1)
+    assert.equal(logCalls[0].level, "info")
+    assert.match(logCalls[0].message, /ephemeral cleanup: dropped 1 task/)
+    assert.equal(logCalls[0].extra.previousPid, 1111)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("ephemeralTasks: false keeps tasks from a previous process", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-test-"))
+  try {
+    const s1 = new LoopStore({
+      storageDir: dir,
+      processIdentity: { pid: 1111, startedAt: Date.now() - 10_000 },
+    })
+    await s1.load()
+    await s1.create({ prompt: "x", mode: "fixed", intervalMs: 60_000, directory: "/tmp", sessionID: "s1" })
+
+    const s2 = new LoopStore({
+      storageDir: dir,
+      ephemeralTasks: false,
+      processIdentity: { pid: 2222, startedAt: Date.now() },
+    })
+    await s2.load()
+    assert.equal(s2.list().length, 1)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("ephemeral: legacy state without pid is dropped; kept when ephemeralTasks is false", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-test-"))
+  try {
+    const legacy = {
+      version: 1,
+      tasks: [
+        {
+          id: "legacy1",
+          prompt: "from v0.2.11",
+          mode: "fixed",
+          intervalMs: 60_000,
+          createdAt: Date.now(),
+          lastFiredAt: 0,
+          nextDueAt: Date.now() + 60_000,
+          source: "user",
+          directory: "/tmp",
+          sessionID: "s1",
+          paused: false,
+        },
+      ],
+    }
+    writeFileSync(join(dir, "tasks.json"), JSON.stringify(legacy), "utf-8")
+    const ephemeral = new LoopStore({ storageDir: dir })
+    await ephemeral.load()
+    assert.equal(ephemeral.list().length, 0, "legacy file cleaned under default ephemeral lifecycle")
+
+    writeFileSync(join(dir, "tasks.json"), JSON.stringify(legacy), "utf-8")
+    const durable = new LoopStore({ storageDir: dir, ephemeralTasks: false })
+    await durable.load()
+    assert.equal(durable.list().length, 1, "legacy file kept when ephemeralTasks is false")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("ephemeral: recycled pid with divergent startedAt is treated as a new process", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-test-"))
+  try {
+    const now = Date.now()
+    const s1 = new LoopStore({
+      storageDir: dir,
+      processIdentity: { pid: 3333, startedAt: now - 120_000 },
+    })
+    await s1.load()
+    await s1.create({ prompt: "x", mode: "fixed", intervalMs: 60_000, directory: "/tmp", sessionID: "s1" })
+
+    // Same pid but boot time is 2 minutes off — the pid was recycled by the OS.
+    const s2 = new LoopStore({
+      storageDir: dir,
+      processIdentity: { pid: 3333, startedAt: now },
+    })
+    await s2.load()
+    assert.equal(s2.list().length, 0)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("ephemeral: empty legacy state adopts identity without a cleanup log", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-test-"))
+  try {
+    writeFileSync(join(dir, "tasks.json"), JSON.stringify({ version: 1, tasks: [] }), "utf-8")
+    const logCalls = []
+    const store = new LoopStore({
+      storageDir: dir,
+      logger: async (level, message, extra) => logCalls.push({ level, message, extra }),
+    })
+    await store.load()
+    assert.equal(store.state.pid, process.pid)
+    assert.equal(logCalls.length, 0, "nothing dropped, nothing logged")
+  } finally {
     rmSync(dir, { recursive: true })
   }
 })

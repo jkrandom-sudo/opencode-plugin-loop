@@ -264,6 +264,9 @@ test("plugin loads legacy tasks.json, drops orphans, keeps session-bound ones", 
       $: {},
       serverUrl: new URL("http://localhost:3000"),
       experimental_workspace: { register: () => {} },
+      // Legacy-file migration is exercised with the durable lifecycle; the
+      // ephemeral default intentionally drops no-pid files (covered below).
+      options: { ephemeralTasks: false },
     })
 
     // Should have only 1 task (the one with sessionID)
@@ -386,7 +389,11 @@ test("command failure becomes an error toast instead of rejecting", async () => 
       sessionID: "sA",
       paused: false,
     }))
-    writeFileSync(join(cacheDir, "tasks.json"), JSON.stringify({ version: 1, tasks }), "utf-8")
+    writeFileSync(
+      join(cacheDir, "tasks.json"),
+      JSON.stringify({ version: 1, pid: process.pid, startedAt: Date.now() - process.uptime() * 1000, tasks }),
+      "utf-8"
+    )
 
     const toastCalls = []
     const mockClient = {
@@ -519,6 +526,103 @@ test("toast transport failure is recorded in structured logs", async () => {
     assert.equal(logCalls[1].body.extra.error, "toast unavailable")
   } finally {
     if (hooks) await hooks.dispose()
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("ephemeral lifecycle: plugin reload in the same process keeps tasks", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-int-"))
+  try {
+    const mockClient = { tui: { appendPrompt: async () => true } }
+    const ctx = () => ({
+      client: mockClient,
+      project: { id: "test" },
+      directory: dir,
+      worktree: dir,
+      $: {},
+      serverUrl: new URL("http://localhost:3000"),
+      experimental_workspace: { register: () => {} },
+    })
+
+    const first = await pluginModule.LoopPlugin(ctx())
+    await first["command.execute.before"](
+      { command: "loop", arguments: "1m ping", sessionID: "sA" },
+      { parts: [] }
+    )
+    await first.dispose()
+
+    // Simulate an in-process plugin reload (opencode re-inits plugins per command).
+    const second = await pluginModule.LoopPlugin(ctx())
+    const status = JSON.parse(
+      await second.tool.loop_status.execute({}, {
+        sessionID: "sA",
+        messageID: "m1",
+        agent: "build",
+        directory: dir,
+        worktree: dir,
+        abort: new AbortController().signal,
+        metadata: () => {},
+        ask: async () => {},
+      })
+    )
+    assert.equal(status.activeTasks, 1, "same-process reload keeps the task")
+    await second.dispose()
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("ephemeral lifecycle: foreign-pid tasks.json dropped by default, kept with ephemeralTasks: false", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-int-"))
+  try {
+    const cacheDir = join(dir, ".opencode/cache/loop")
+    mkdirSync(cacheDir, { recursive: true })
+    const foreignState = () => ({
+      version: 1,
+      pid: 1,
+      startedAt: Date.now() - 86_400_000,
+      tasks: [
+        { id: "foreign", prompt: "from a dead process", mode: "fixed", intervalMs: 60_000, createdAt: Date.now(), lastFiredAt: 0, nextDueAt: Date.now() + 60_000, source: "user", directory: dir, sessionID: "sA", paused: false },
+      ],
+    })
+    const mockClient = { tui: { appendPrompt: async () => true } }
+    const ctx = (options) => ({
+      client: mockClient,
+      project: { id: "test" },
+      directory: dir,
+      worktree: dir,
+      $: {},
+      serverUrl: new URL("http://localhost:3000"),
+      experimental_workspace: { register: () => {} },
+      ...(options ? { options } : {}),
+    })
+    const toolCtx = {
+      sessionID: "sA",
+      messageID: "m1",
+      agent: "build",
+      directory: dir,
+      worktree: dir,
+      abort: new AbortController().signal,
+      metadata: () => {},
+      ask: async () => {},
+    }
+
+    // Default (ephemeral): task written by a dead process is dropped on load.
+    writeFileSync(join(cacheDir, "tasks.json"), JSON.stringify(foreignState()), "utf-8")
+    const ephemeralHooks = await pluginModule.LoopPlugin(ctx())
+    const dropped = JSON.parse(await ephemeralHooks.tool.loop_status.execute({}, toolCtx))
+    assert.equal(dropped.activeTasks, 0)
+    assert.equal(dropped.pausedTasks, 0)
+    await ephemeralHooks.dispose()
+
+    // Durable: same fixture is preserved.
+    writeFileSync(join(cacheDir, "tasks.json"), JSON.stringify(foreignState()), "utf-8")
+    const durableHooks = await pluginModule.LoopPlugin(ctx({ ephemeralTasks: false }))
+    const kept = JSON.parse(await durableHooks.tool.loop_status.execute({}, toolCtx))
+    assert.equal(kept.activeTasks, 1)
+    assert.equal(kept.tasks[0].id, "foreign")
+    await durableHooks.dispose()
+  } finally {
     rmSync(dir, { recursive: true })
   }
 })
