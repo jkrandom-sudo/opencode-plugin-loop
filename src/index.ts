@@ -46,6 +46,7 @@ const DEFAULT_CONFIG: Required<LoopConfig> = {
   defaultAdaptiveMaxMs: 3_600_000,
   tickerIntervalMs: 5_000,
   defaultJitterEnabled: true,
+  ephemeralTasks: true,
 }
 
 function commandAction(args: string): string {
@@ -70,6 +71,7 @@ export const LoopPlugin: Plugin = async (ctx) => {
     storageDir,
     maxTasks: config.maxTasks,
     taskTtlMs: config.taskTtlDays * 86_400_000,
+    ephemeralTasks: config.ephemeralTasks,
     logger,
   })
   await store.load()

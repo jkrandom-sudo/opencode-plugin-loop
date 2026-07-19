@@ -23,11 +23,26 @@ export interface LoopStoreOptions {
   maxTasks?: number
   taskTtlMs?: number
   logger?: LoopLogger
+  /**
+   * Ephemeral lifecycle (default true): tasks written by a different process are
+   * dropped on load. Process identity is tracked via pid + process start time so
+   * same-process plugin reloads keep their tasks.
+   */
+  ephemeralTasks?: boolean
+  /** Injectable process identity for tests; defaults to the current process. */
+  processIdentity?: ProcessIdentity
+}
+
+export interface ProcessIdentity {
+  pid: number
+  startedAt: number
 }
 
 interface PersistedState {
   version: 1
   tasks: LoopTask[]
+  pid?: number
+  startedAt?: number
 }
 
 interface LoopStoreInstance {
@@ -72,6 +87,18 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
   // in which case `this` is undefined in strict mode.
   void this
   let logger: LoopLogger = async () => {}
+  let ephemeralTasks = true
+  let identity: ProcessIdentity = {
+    pid: process.pid,
+    startedAt: Date.now() - process.uptime() * 1000,
+  }
+  /** Same-process reload keeps tasks; a different pid — or a recycled pid whose
+   *  recorded start time diverges — means the writer was a previous process. */
+  const PID_START_TOLERANCE_MS = 30_000
+  const isSameProcess = (state: PersistedState): boolean =>
+    state.pid === identity.pid &&
+    state.startedAt !== undefined &&
+    Math.abs(state.startedAt - identity.startedAt) <= PID_START_TOLERANCE_MS
   const inst: LoopStoreInstance = {
     state: { version: 1, tasks: [] },
     filePath: "",
@@ -87,6 +114,18 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
         const parsed = JSON.parse(raw) as PersistedState
         if (parsed.version !== 1) {
           throw new Error(`Unsupported state version: ${parsed.version}`)
+        }
+        if (ephemeralTasks && !isSameProcess(parsed)) {
+          const dropped = parsed.tasks.length
+          inst.state = { version: 1, tasks: [] }
+          await inst.persist()
+          if (dropped > 0) {
+            await logger("info", `ephemeral cleanup: dropped ${dropped} task(s) from previous process`, {
+              count: dropped,
+              previousPid: parsed.pid,
+            })
+          }
+          return
         }
         const cutoff = Date.now() - inst.taskTtlMs
         const filtered = parsed.tasks.filter((t) => t.createdAt > cutoff && !!t.sessionID)
@@ -113,6 +152,8 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
       }
     },
     persist: async () => {
+      inst.state.pid = identity.pid
+      inst.state.startedAt = identity.startedAt
       const tmp = `${inst.filePath}.tmp`
       mkdirSync(dirname(tmp), { recursive: true })
       writeFileSync(tmp, JSON.stringify(inst.state, null, 2), "utf-8")
@@ -265,6 +306,8 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
 
   if (options) {
     logger = options.logger ?? logger
+    ephemeralTasks = options.ephemeralTasks ?? true
+    identity = options.processIdentity ?? identity
     inst.filePath = join(options.storageDir, "tasks.json")
     inst.maxTasks = options.maxTasks ?? 50
     inst.taskTtlMs = options.taskTtlMs ?? 7 * 24 * 60 * 60 * 1000
