@@ -556,3 +556,58 @@ test("fixed tasks re-arm from fire start, not fire completion (no drift)", async
     rmSync(dir, { recursive: true })
   }
 })
+
+// --- c4: --once one-shot tasks ---
+
+test("/loop 30s --once fires exactly once then auto-cancels", async () => {
+  const { sched, store, dir } = makeScheduler()
+  try {
+    const r = await sched.handleUserCommand("30s --once say hi", "/tmp", "s1")
+    assert.equal(r.task.mode, "fixed")
+    assert.equal(r.task.once, true)
+    assert.equal(r.task.prompt, "say hi")
+    assert.match(r.message, /runs once/)
+
+    const t0 = 1_800_000_000_000
+    const mockCtx = { client: { session: { async prompt() { return { info: {}, parts: [] } } } } }
+    await sched.executeTask(store.get(r.task.id), mockCtx, t0)
+    assert.equal(store.get(r.task.id), null, "task auto-cancelled after first fire")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("--once task survives a failed fire (retry next cycle)", async () => {
+  const { sched, store, dir } = makeScheduler()
+  try {
+    const r = await sched.handleUserCommand("30s --once say hi", "/tmp", "s1")
+    const failingCtx = { client: { session: { async prompt() { throw new Error("boom") } } } }
+    await sched.executeTask(store.get(r.task.id), failingCtx, 1_800_000_000_000)
+    assert.ok(store.get(r.task.id), "task kept for retry")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("--once without an interval is rejected", async () => {
+  const { sched, store, dir } = makeScheduler()
+  try {
+    const r = await sched.handleUserCommand("--once check things", "/tmp", "s1")
+    assert.equal(r.task, undefined)
+    assert.match(r.message, /--once is only supported for fixed/)
+    assert.equal(store.list().length, 0)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("list marks one-shot tasks", async () => {
+  const { sched, dir } = makeScheduler()
+  try {
+    await sched.handleUserCommand("30s --once say hi", "/tmp", "s1")
+    const r = await sched.handleUserCommand("list", "/tmp", "s1")
+    assert.match(r.message, /once/)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})

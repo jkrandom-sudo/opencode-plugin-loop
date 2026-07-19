@@ -56,7 +56,7 @@ interface SchedulerInstance {
   getDueTasksForSession(sessionID: string, now?: number): Promise<LoopTask[]>
   nextDueAt(task: LoopTask, now?: number): Promise<number>
   executeTask(task: LoopTask, ctx: any, now?: number): Promise<void>
-  fireTask(task: LoopTask, ctx: any): Promise<void>
+  fireTask(task: LoopTask, ctx: any): Promise<boolean>
   rearmFixed(task: LoopTask, now?: number): Promise<void>
   rearmAdaptive(task: LoopTask, now?: number): Promise<void>
   adaptiveNextDueAt(task: LoopTask, now?: number): number
@@ -159,6 +159,7 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
       const trimmed = stripOuterQuotes(args.trim())
       const tokens = trimmed === "" ? [] : trimmed.split(/\s+/)
       const allFlag = tokens.includes("--all")
+      const onceFlag = tokens.includes("--once")
       let head = tokens[0]?.toLowerCase()
 
       // Claude Code-style leading flags map to subcommands (P-1).
@@ -239,7 +240,7 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
         // Strip command flags that leaked into the prompt area (B2).
         fixed.prompt = fixed.prompt
           .split(/\s+/)
-          .filter((t) => t !== "--all")
+          .filter((t) => t !== "--all" && t !== "--once")
           .join(" ")
           .trim()
         if (!fixed.prompt) {
@@ -252,13 +253,14 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
           mode: "fixed",
           intervalMs: interval.ms,
           jitterEnabled: fixed.jitterEnabled ?? inst.opts.defaultJitterEnabled ?? true,
+          once: onceFlag || undefined,
           directory,
           source: "user",
           sessionID,
         })
         return {
           task,
-          message: `🔁 Loop started: every ${interval.display}, prompt "${fixed.prompt.slice(0, 50)}${fixed.prompt.length > 50 ? "..." : ""}" [id=${task.id}] [s=${sessionID.slice(0, 8)}]. Cancel: \`/loop cancel ${task.id}\``,
+          message: `🔁 Loop started: every ${interval.display}, prompt "${fixed.prompt.slice(0, 50)}${fixed.prompt.length > 50 ? "..." : ""}" [id=${task.id}] [s=${sessionID.slice(0, 8)}]${task.once ? " (runs once)" : ""}. Cancel: \`/loop cancel ${task.id}\``,
         }
       }
 
@@ -278,11 +280,14 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
       if (trimmed) {
         // Command flags are scheduling metadata, not prompt text (B2).
         const prompt = tokens
-          .filter((t) => t !== "--all" && t !== "--jitter=true" && t !== "--jitter=false")
+          .filter((t) => t !== "--all" && t !== "--jitter=true" && t !== "--jitter=false" && t !== "--once")
           .join(" ")
           .trim()
         if (!prompt) {
           return { message: "❌ Empty loop command — see `/loop help`." }
+        }
+        if (onceFlag) {
+          return { message: "❌ --once is only supported for fixed-interval tasks, e.g. `/loop 30s --once <prompt>`." }
         }
         const task = await inst.opts.store.create({
           prompt,
@@ -369,10 +374,11 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
               ? `adaptive ${(t.adaptiveMinMs ?? 0) / 1000}s–${(t.adaptiveMaxMs ?? 0) / 1000}s`
               : `maintenance ${(t.adaptiveMaxMs ?? 0) / 1000}s`
         const status = t.paused ? "⏸ paused" : "▶ active"
+        const onceTag = t.once ? " • once" : ""
         const sessionTag =
           showSession && t.sessionID ? ` [s:${t.sessionID.slice(0, 8)}]` : ""
         const preview = t.prompt.length > 60 ? t.prompt.slice(0, 60) + "..." : t.prompt
-        lines.push(`  [${t.id}]${sessionTag} ${status} • ${interval} • ${preview}`)
+        lines.push(`  [${t.id}]${sessionTag} ${status} • ${interval}${onceTag} • ${preview}`)
       }
       lines.push(
         `Manage: \`/loop cancel|pause|resume <id>\` (add \`--all\` to cross sessions) or \`/loop stop-all\``
@@ -439,13 +445,18 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
       // Wall-clock scheduling: the next cycle is anchored to when this fire
       // STARTED, so long-running model turns do not inflate the interval.
       const fireStartedAt = now ?? Date.now()
-      await inst.fireTask(task, ctx)
+      const fired = await inst.fireTask(task, ctx)
+      // One-shot tasks end after their first successful fire (P-4).
+      if (task.once && fired) {
+        await inst.opts.store.cancel(task.id)
+        return
+      }
       const next = await inst.nextDueAt(task, fireStartedAt)
       await inst.opts.store.markFired(task.id, next)
     },
 
     async fireTask(task, ctx) {
-      if (inst.inflight.has(task.id)) return
+      if (inst.inflight.has(task.id)) return false
       inst.inflight.add(task.id)
       try {
         const sessionID = task.sessionID
@@ -462,12 +473,12 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
         if (!sessionID) {
           await logger("warn", "task has no sessionID; skipping", { taskId: task.id })
           await inst.opts.store.logFire(task, false)
-          return
+          return false
         }
         if (!client?.session?.prompt) {
           await logger("warn", "client.session.prompt not available", { taskId: task.id })
           await inst.opts.store.logFire(task, false)
-          return
+          return false
         }
         try {
           await client.session.prompt({
@@ -485,12 +496,14 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
             query: { directory },
           })
           await inst.opts.store.logFire(task, true)
+          return true
         } catch (err) {
           await inst.opts.store.logFire(task, false)
           await logger("error", "failed to fire task", {
             taskId: task.id,
             error: errorMessage(err),
           })
+          return false
         }
       } finally {
         inst.inflight.delete(task.id)

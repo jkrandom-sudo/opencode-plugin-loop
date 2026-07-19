@@ -32,6 +32,8 @@ export interface LoopTask {
   sessionID: string
   /** Disabled? */
   paused: boolean
+  /** One-shot task: auto-cancelled after the first successful fire (fixed mode only). */
+  once?: boolean
 }
 
 export interface LoopConfig {
@@ -77,6 +79,8 @@ export interface CreateTaskInput {
   directory: string
   /** Required: the session this task is bound to */
   sessionID: string
+  /** One-shot task (fixed mode only): auto-cancel after the first successful fire. */
+  once?: boolean
 }
 
 export interface FireResult {

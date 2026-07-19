@@ -32,6 +32,7 @@ export async function buildLoopTools(
         delayMs: z.number().finite().optional().describe("Relative delay in milliseconds (preferred for Adaptive reschedule)"),
         nextDueAtMs: z.number().finite().optional().describe("Absolute epoch ms for reschedule; cannot be combined with delayMs"),
         jitterEnabled: z.boolean().optional().describe("Fixed-task Jitter policy for create or set_fixed"),
+        once: z.boolean().optional().describe("One-shot task: auto-cancel after the first successful fire (fixed mode only)"),
         mode: z
           .enum(["fixed", "adaptive", "maintenance"])
           .optional()
@@ -141,9 +142,13 @@ export async function buildLoopTools(
             if (!sid)
               return JSON.stringify({ ok: false, error: "No sessionID in context" })
             const mode = args.mode ?? (args.intervalMs ? "fixed" : "adaptive")
+            if (args.once && mode !== "fixed") {
+              return JSON.stringify({ ok: false, error: "once is supported only for fixed tasks" })
+            }
             const input: any = {
               prompt: args.prompt,
               mode,
+              once: args.once || undefined,
               directory,
               source: "user",
               sessionID: sid,

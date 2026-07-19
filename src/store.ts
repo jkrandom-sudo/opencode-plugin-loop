@@ -242,6 +242,7 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
         directory: input.directory,
         sessionID: input.sessionID,
         paused: false,
+        once: input.once,
       }
       inst.state.tasks.push(task)
       dirtyIds.add(task.id)
