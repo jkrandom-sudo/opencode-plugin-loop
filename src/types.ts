@@ -32,6 +32,8 @@ export interface LoopTask {
   sessionID: string
   /** Disabled? */
   paused: boolean
+  /** One-shot task: auto-cancelled after the first successful fire (fixed mode only). */
+  once?: boolean
 }
 
 export interface LoopConfig {
@@ -57,6 +59,13 @@ export interface LoopConfig {
    * keep the legacy behavior of persisting tasks across process restarts.
    */
   ephemeralTasks?: boolean
+  /**
+   * Single-leader instance lock (default true): when several plugin instances
+   * share one tasks.json (case-variant plugin paths, per-command `opencode
+   * run` instances), only the leader's ticker fires tasks. Set to false to
+   * disable coordination (not recommended).
+   */
+  instanceLock?: boolean
 }
 
 export interface CreateTaskInput {
@@ -70,6 +79,8 @@ export interface CreateTaskInput {
   directory: string
   /** Required: the session this task is bound to */
   sessionID: string
+  /** One-shot task (fixed mode only): auto-cancel after the first successful fire. */
+  once?: boolean
 }
 
 export interface FireResult {

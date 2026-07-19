@@ -32,6 +32,7 @@ export async function buildLoopTools(
         delayMs: z.number().finite().optional().describe("Relative delay in milliseconds (preferred for Adaptive reschedule)"),
         nextDueAtMs: z.number().finite().optional().describe("Absolute epoch ms for reschedule; cannot be combined with delayMs"),
         jitterEnabled: z.boolean().optional().describe("Fixed-task Jitter policy for create or set_fixed"),
+        once: z.boolean().optional().describe("One-shot task: auto-cancel after the first successful fire (fixed mode only)"),
         mode: z
           .enum(["fixed", "adaptive", "maintenance"])
           .optional()
@@ -121,8 +122,15 @@ export async function buildLoopTools(
               })
             }
             const r = await store.setPaused(args.taskId, false)
-            if (r && r.mode === "fixed" && r.intervalMs) {
-              await scheduler.rearmFixed(r)
+            if (r) {
+              // Re-arm per mode (B6), same as /loop resume.
+              if (r.mode === "fixed" && r.intervalMs) {
+                await scheduler.rearmFixed(r)
+              } else if (r.mode === "adaptive") {
+                await scheduler.rearmAdaptive(r)
+              } else if (r.mode === "maintenance" && r.adaptiveMaxMs) {
+                await store.reschedule(r.id, Date.now() + r.adaptiveMaxMs)
+              }
             }
             return JSON.stringify({ ok: !!r, task: r }, null, 2)
           }
@@ -134,9 +142,13 @@ export async function buildLoopTools(
             if (!sid)
               return JSON.stringify({ ok: false, error: "No sessionID in context" })
             const mode = args.mode ?? (args.intervalMs ? "fixed" : "adaptive")
+            if (args.once && mode !== "fixed") {
+              return JSON.stringify({ ok: false, error: "once is supported only for fixed tasks" })
+            }
             const input: any = {
               prompt: args.prompt,
               mode,
+              once: args.once || undefined,
               directory,
               source: "user",
               sessionID: sid,
@@ -147,8 +159,9 @@ export async function buildLoopTools(
                 args.jitterEnabled ?? scheduler.opts.defaultJitterEnabled ?? true
             }
             if (mode === "adaptive") {
-              input.adaptiveMinMs = 60_000
-              input.adaptiveMaxMs = 3_600_000
+              // B5: honor the configured adaptive bounds instead of hardcoding.
+              input.adaptiveMinMs = scheduler.opts.adaptiveMinMs
+              input.adaptiveMaxMs = scheduler.opts.adaptiveMaxMs
             }
             const task = await store.create(input)
             if (task.mode === "adaptive") await scheduler.rearmAdaptive(task)
@@ -246,11 +259,16 @@ export async function buildLoopTools(
                 error: "set_fixed requires an Adaptive task",
               })
             }
+            // B7: apply the configured jitter policy to the FIRST cycle too,
+            // so conversion and later re-arms behave identically.
+            const conversionTime = Date.now()
             const r = await store.setFixed(
               args.taskId,
               args.intervalMs as number,
-              args.jitterEnabled ?? false
+              args.jitterEnabled ?? false,
+              conversionTime
             )
+            if (r) await scheduler.rearmFixed(r, conversionTime)
             return JSON.stringify(
               {
                 ok: !!r,

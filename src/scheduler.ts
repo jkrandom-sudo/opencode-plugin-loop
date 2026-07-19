@@ -56,7 +56,7 @@ interface SchedulerInstance {
   getDueTasksForSession(sessionID: string, now?: number): Promise<LoopTask[]>
   nextDueAt(task: LoopTask, now?: number): Promise<number>
   executeTask(task: LoopTask, ctx: any, now?: number): Promise<void>
-  fireTask(task: LoopTask, ctx: any): Promise<void>
+  fireTask(task: LoopTask, ctx: any): Promise<boolean>
   rearmFixed(task: LoopTask, now?: number): Promise<void>
   rearmAdaptive(task: LoopTask, now?: number): Promise<void>
   adaptiveNextDueAt(task: LoopTask, now?: number): number
@@ -79,6 +79,68 @@ function extractJitterFlag(text: string): { prompt: string; jitterEnabled?: bool
   }
 }
 
+/** Strip one layer of matching surrounding quotes (B10). */
+function stripOuterQuotes(text: string): string {
+  const t = text.trim()
+  if (t.length >= 2) {
+    const first = t[0]
+    const last = t[t.length - 1]
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      return t.slice(1, -1).trim()
+    }
+  }
+  return t
+}
+
+/** Claude Code-style flags accepted as subcommand aliases (P-1). */
+const CC_FLAG_MAP: Record<string, string> = {
+  "--cancel": "cancel",
+  "--stop": "stop",
+  "--list": "list",
+  "--status": "status",
+  "--pause": "pause",
+  "--resume": "resume",
+  "--stop-all": "stop-all",
+}
+
+/** Flags that are meaningful in command position (not errors when leading). */
+const LEADING_OK = new Set(["--all", "--jitter=true", "--jitter=false", "--once"])
+
+/** crude cron-expression detector (five-field crontab syntax) (B9). */
+function looksLikeCron(tokens: string[]): boolean {
+  if (tokens.length < 5) return false
+  return tokens.slice(0, 5).every((t) => /^[\d*,/\-]+$/.test(t) && /[*,/\-]|\d/.test(t))
+}
+
+export const LOOP_HELP = `/loop — run prompts on a schedule
+
+Usage:
+  /loop <prompt>                    Adaptive: runs now, the model picks the next check (fallback 1m–1h)
+  /loop <interval> <prompt>         Fixed interval: 30s, 5m, 2h, 1d (min 1s)
+  /loop                             Maintenance mode (uses .opencode/loop.md when present)
+  /loop help                        Show this help
+
+Subcommands (session-scoped; add --all to cross sessions):
+  list | status [--all]             Show loop tasks
+  cancel <id> [--all]               Cancel one task
+  pause <id> [--all]                Pause one task
+  resume <id> [--all]               Resume one task
+  stop-all [--all]                  Cancel all tasks
+
+Flags:
+  --all                             Operate across all sessions
+  --jitter=true|false               Force Jitter on/off for a fixed task
+  --once                            Fire once, then auto-cancel (fixed tasks only)
+
+Claude Code-style flags are accepted too: --cancel, --list, --status,
+--pause, --resume, --stop, --stop-all map to the matching subcommand.
+
+Examples:
+  /loop 5m check the deploy status
+  /loop 30s --once remind me to stretch
+  /loop every two minutes check CI
+  /loop cancel a1b2c3d4`
+
 export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInstance {
   void this
   const logger: LoopLogger = opts.logger ?? (async () => {})
@@ -94,14 +156,33 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
 
     async handleUserCommand(args, directory, sessionID) {
       if (sessionID !== undefined) inst.currentSessionID = sessionID
-      const trimmed = args.trim()
-      const tokens = trimmed.split(/\s+/)
+      const trimmed = stripOuterQuotes(args.trim())
+      const tokens = trimmed === "" ? [] : trimmed.split(/\s+/)
       const allFlag = tokens.includes("--all")
-      const head = tokens[0]?.toLowerCase()
+      const onceFlag = tokens.includes("--once")
+      let head = tokens[0]?.toLowerCase()
+
+      // Claude Code-style leading flags map to subcommands (P-1).
+      if (head && CC_FLAG_MAP[head]) {
+        head = CC_FLAG_MAP[head]
+        tokens[0] = head
+      } else if (head === "help" || head === "--help" || head === "-h") {
+        return { message: LOOP_HELP }
+      } else if (head?.startsWith("--") && !LEADING_OK.has(head)) {
+        return {
+          message: `❌ Unknown flag "${tokens[0]}". Run \`/loop help\` to see usage.`,
+        }
+      }
+
+      // Leading --all is sugar: `/loop --all list` == `/loop list --all`.
+      if (head === "--all") {
+        tokens.shift()
+        head = tokens[0]?.toLowerCase()
+      }
 
       if (head === "cancel" || head === "stop") {
         const id = tokens[1]
-        if (!id) return { message: "❌ 用法: /loop cancel <taskId> [--all]" }
+        if (!id) return { message: "❌ Usage: /loop cancel <taskId> [--all]" }
         return inst.handleCancel(id, allFlag)
       }
       if (head === "list" || head === "status") {
@@ -112,12 +193,12 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
       }
       if (head === "pause") {
         const id = tokens[1]
-        if (!id) return { message: "❌ 用法: /loop pause <taskId> [--all]" }
+        if (!id) return { message: "❌ Usage: /loop pause <taskId> [--all]" }
         return inst.handlePause(id, allFlag)
       }
       if (head === "resume") {
         const id = tokens[1]
-        if (!id) return { message: "❌ 用法: /loop resume <taskId> [--all]" }
+        if (!id) return { message: "❌ Usage: /loop resume <taskId> [--all]" }
         return inst.handleResume(id, allFlag)
       }
       if (head === "stop-all") {
@@ -143,34 +224,73 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
           source: "default",
           sessionID,
         })
+        // Run the maintenance prompt immediately in this turn (matching
+        // Adaptive's run-now behavior), then re-arm on the slow cycle.
+        await inst.opts.store.markFired(task.id, Date.now() + inst.opts.adaptiveMaxMs)
         return {
           task,
-          message: `🔁 Loop started (maintenance mode): task ${task.id} (session ${sessionID.slice(0, 8)}). Auto re-arms every ${inst.opts.adaptiveMaxMs / 1000}s. Use \`/loop cancel ${task.id}\` to stop.`,
+          modelPrompt: prompt,
+          message: `🔁 Loop started (maintenance mode): task ${task.id} (session ${sessionID.slice(0, 8)}). Running now; then re-arms every ${inst.opts.adaptiveMaxMs / 1000}s. Use \`/loop cancel ${task.id}\` to stop.`,
         }
       }
 
       const { interval, rest } = inst.opts.cron.extractInterval(trimmed)
-      if (interval && rest.trim()) {
+      if (interval) {
         const fixed = extractJitterFlag(rest)
-        if (!fixed.prompt) return { message: "❌ Empty loop command" }
+        // Strip command flags that leaked into the prompt area (B2).
+        fixed.prompt = fixed.prompt
+          .split(/\s+/)
+          .filter((t) => t !== "--all" && t !== "--once")
+          .join(" ")
+          .trim()
+        if (!fixed.prompt) {
+          return {
+            message: `❌ Missing prompt after interval "${tokens[0]}". Usage: /loop <interval> <prompt> — see \`/loop help\`.`,
+          }
+        }
         const task = await inst.opts.store.create({
           prompt: fixed.prompt,
           mode: "fixed",
           intervalMs: interval.ms,
           jitterEnabled: fixed.jitterEnabled ?? inst.opts.defaultJitterEnabled ?? true,
+          once: onceFlag || undefined,
           directory,
           source: "user",
           sessionID,
         })
         return {
           task,
-          message: `🔁 Loop started: every ${interval.display}, prompt "${fixed.prompt.slice(0, 50)}${fixed.prompt.length > 50 ? "..." : ""}" [id=${task.id}] [s=${sessionID.slice(0, 8)}]. Cancel: \`/loop cancel ${task.id}\``,
+          message: `🔁 Loop started: every ${interval.display}, prompt "${fixed.prompt.slice(0, 50)}${fixed.prompt.length > 50 ? "..." : ""}" [id=${task.id}] [s=${sessionID.slice(0, 8)}]${task.once ? " (runs once)" : ""}. Cancel: \`/loop cancel ${task.id}\``,
+        }
+      }
+
+      // Reject inputs that look like scheduling syntax but are not supported,
+      // instead of silently creating an Adaptive task out of them.
+      if (looksLikeCron(tokens)) {
+        return {
+          message: `❌ Cron expressions are not supported. Use an interval like \`5m\` instead, e.g. \`/loop 5m ${tokens.slice(5).join(" ") || "check the build"}\`.`,
+        }
+      }
+      if (/^\d/.test(tokens[0] ?? "")) {
+        return {
+          message: `❌ Invalid interval "${tokens[0]}". Use <number>s/m/h/d (min 1s), e.g. 30s, 5m, 2h, 1d — see \`/loop help\`.`,
         }
       }
 
       if (trimmed) {
+        // Command flags are scheduling metadata, not prompt text (B2).
+        const prompt = tokens
+          .filter((t) => t !== "--all" && t !== "--jitter=true" && t !== "--jitter=false" && t !== "--once")
+          .join(" ")
+          .trim()
+        if (!prompt) {
+          return { message: "❌ Empty loop command — see `/loop help`." }
+        }
+        if (onceFlag) {
+          return { message: "❌ --once is only supported for fixed-interval tasks, e.g. `/loop 30s --once <prompt>`." }
+        }
         const task = await inst.opts.store.create({
-          prompt: trimmed,
+          prompt,
           mode: "adaptive",
           adaptiveMinMs: inst.opts.adaptiveMinMs,
           adaptiveMaxMs: inst.opts.adaptiveMaxMs,
@@ -186,11 +306,11 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
             minMs: inst.opts.adaptiveMinMs,
             maxMs: inst.opts.adaptiveMaxMs,
           }),
-          message: `🔁 Loop started (adaptive ${inst.opts.adaptiveMinMs / 1000}s–${inst.opts.adaptiveMaxMs / 1000}s): "${trimmed.slice(0, 50)}${trimmed.length > 50 ? "..." : ""}" [id=${task.id}] [s=${sessionID.slice(0, 8)}]. Cancel: \`/loop cancel ${task.id}\``,
+          message: `🔁 Loop started (adaptive ${inst.opts.adaptiveMinMs / 1000}s–${inst.opts.adaptiveMaxMs / 1000}s): "${prompt.slice(0, 50)}${prompt.length > 50 ? "..." : ""}" [id=${task.id}] [s=${sessionID.slice(0, 8)}]. Cancel: \`/loop cancel ${task.id}\``,
         }
       }
 
-      return { message: "❌ Empty loop command" }
+      return { message: "❌ Empty loop command — see `/loop help`." }
     },
 
     handleCancel(id, allFlag) {
@@ -228,8 +348,16 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
         }
       }
       const r = await inst.opts.store.setPaused(id, false)
-      if (r && r.mode === "fixed" && r.intervalMs) {
-        await inst.rearmFixed(r)
+      if (r) {
+        // Re-arm per mode (B6): without this, adaptive/maintenance tasks keep
+        // a stale nextDueAt and catch-up fire immediately on resume.
+        if (r.mode === "fixed" && r.intervalMs) {
+          await inst.rearmFixed(r)
+        } else if (r.mode === "adaptive") {
+          await inst.rearmAdaptive(r)
+        } else if (r.mode === "maintenance" && r.adaptiveMaxMs) {
+          await inst.opts.store.reschedule(r.id, Date.now() + r.adaptiveMaxMs)
+        }
       }
       return { message: r ? `▶ Resumed ${id}` : `❌ No task ${id}` }
     },
@@ -246,10 +374,11 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
               ? `adaptive ${(t.adaptiveMinMs ?? 0) / 1000}s–${(t.adaptiveMaxMs ?? 0) / 1000}s`
               : `maintenance ${(t.adaptiveMaxMs ?? 0) / 1000}s`
         const status = t.paused ? "⏸ paused" : "▶ active"
+        const onceTag = t.once ? " • once" : ""
         const sessionTag =
           showSession && t.sessionID ? ` [s:${t.sessionID.slice(0, 8)}]` : ""
         const preview = t.prompt.length > 60 ? t.prompt.slice(0, 60) + "..." : t.prompt
-        lines.push(`  [${t.id}]${sessionTag} ${status} • ${interval} • ${preview}`)
+        lines.push(`  [${t.id}]${sessionTag} ${status} • ${interval}${onceTag} • ${preview}`)
       }
       lines.push(
         `Manage: \`/loop cancel|pause|resume <id>\` (add \`--all\` to cross sessions) or \`/loop stop-all\``
@@ -313,13 +442,21 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
         return
       }
 
-      await inst.fireTask(task, ctx)
-      const next = await inst.nextDueAt(task, now ?? Date.now())
+      // Wall-clock scheduling: the next cycle is anchored to when this fire
+      // STARTED, so long-running model turns do not inflate the interval.
+      const fireStartedAt = now ?? Date.now()
+      const fired = await inst.fireTask(task, ctx)
+      // One-shot tasks end after their first successful fire (P-4).
+      if (task.once && fired) {
+        await inst.opts.store.cancel(task.id)
+        return
+      }
+      const next = await inst.nextDueAt(task, fireStartedAt)
       await inst.opts.store.markFired(task.id, next)
     },
 
     async fireTask(task, ctx) {
-      if (inst.inflight.has(task.id)) return
+      if (inst.inflight.has(task.id)) return false
       inst.inflight.add(task.id)
       try {
         const sessionID = task.sessionID
@@ -336,12 +473,12 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
         if (!sessionID) {
           await logger("warn", "task has no sessionID; skipping", { taskId: task.id })
           await inst.opts.store.logFire(task, false)
-          return
+          return false
         }
         if (!client?.session?.prompt) {
           await logger("warn", "client.session.prompt not available", { taskId: task.id })
           await inst.opts.store.logFire(task, false)
-          return
+          return false
         }
         try {
           await client.session.prompt({
@@ -359,12 +496,14 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
             query: { directory },
           })
           await inst.opts.store.logFire(task, true)
+          return true
         } catch (err) {
           await inst.opts.store.logFire(task, false)
           await logger("error", "failed to fire task", {
             taskId: task.id,
             error: errorMessage(err),
           })
+          return false
         }
       } finally {
         inst.inflight.delete(task.id)
@@ -416,4 +555,4 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
  */
 export const DEFAULT_MAINTENANCE_PROMPT = `Continue any unfinished work from this conversation. Tend to the current branch's pull request: review comments, failed CI runs, merge conflicts. Run cleanup passes such as bug hunts or simplification when nothing else is pending.
 
-Do not start new initiatives outside the above scope. Irreversible actions such as pushing or deleting only proceed when they continue something the transcript already authorized. After completing the work, call loop_schedule(action="cancel", taskId="<your id>") to end the loop, or call loop_schedule(action="reschedule", taskId="<your id>", nextDueAtMs=<pick a value between 60000 and 3600000>) to continue.`
+Do not start new initiatives outside the above scope. Irreversible actions such as pushing or deleting only proceed when they continue something the transcript already authorized. After completing the work, call loop_schedule(action="cancel", taskId="<your id>") to end the loop, or call loop_schedule(action="reschedule", taskId="<your id>", delayMs=<a relative delay between 60000 and 3600000>) to continue.`

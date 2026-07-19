@@ -1,6 +1,6 @@
 {
   "name": "opencode-plugin-loop",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "/loop command for opencode — run prompts on a schedule (fixed, adaptive, or maintenance), modeled after Claude Code's /loop",
   "type": "module",
   "main": "./dist/index.js",

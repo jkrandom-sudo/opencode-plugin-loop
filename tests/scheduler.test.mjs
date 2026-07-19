@@ -392,3 +392,222 @@ test("fireTask failure uses structured logger without console output", async () 
     rmSync(dir, { recursive: true })
   }
 })
+
+// --- c2: parsing hygiene + help ---
+
+test("/loop help shows usage with all flags", async () => {
+  const { sched, dir } = makeScheduler()
+  try {
+    const r = await sched.handleUserCommand("help", "/tmp", "s1")
+    assert.equal(r.task, undefined)
+    assert.match(r.message, /--all/)
+    assert.match(r.message, /--jitter=true\|false/)
+    assert.match(r.message, /--once/)
+    assert.match(r.message, /--cancel, --list/)
+    assert.match(r.message, /cancel <id>/)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("/loop 5m (interval, no prompt) errors instead of creating a task", async () => {
+  const { sched, store, dir } = makeScheduler()
+  try {
+    const r = await sched.handleUserCommand("5m", "/tmp", "s1")
+    assert.equal(r.task, undefined)
+    assert.match(r.message, /Missing prompt/)
+    assert.equal(store.list().length, 0)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("/loop 0s x and /loop 999x x are rejected as invalid intervals", async () => {
+  const { sched, store, dir } = makeScheduler()
+  try {
+    for (const args of ["0s test", "999x test", "5 test"]) {
+      const r = await sched.handleUserCommand(args, "/tmp", "s1")
+      assert.equal(r.task, undefined, args)
+      assert.match(r.message, /Invalid interval/, args)
+    }
+    assert.equal(store.list().length, 0)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("cron-shaped input is rejected with guidance", async () => {
+  const { sched, store, dir } = makeScheduler()
+  try {
+    const r = await sched.handleUserCommand("*/5 * * * * check build", "/tmp", "s1")
+    assert.equal(r.task, undefined)
+    assert.match(r.message, /Cron expressions are not supported/)
+    assert.equal(store.list().length, 0)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("--all is stripped from fixed and adaptive prompts (B2)", async () => {
+  const { sched, dir } = makeScheduler()
+  try {
+    const r1 = await sched.handleUserCommand("5m --all check deploy", "/tmp", "s1")
+    assert.equal(r1.task.prompt, "check deploy")
+    const r2 = await sched.handleUserCommand("--all check the weather", "/tmp", "s1")
+    assert.equal(r2.task.prompt, "check the weather")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("surrounding quotes are stripped before parsing (B10)", async () => {
+  const { sched, dir } = makeScheduler()
+  try {
+    const r = await sched.handleUserCommand('"5m check deploy"', "/tmp", "s1")
+    assert.equal(r.task.mode, "fixed")
+    assert.equal(r.task.prompt, "check deploy")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("Claude Code-style flags map to subcommands (P-1)", async () => {
+  const { sched, store, dir } = makeScheduler()
+  try {
+    const created = await sched.handleUserCommand("5m check deploy", "/tmp", "s1")
+    const id = created.task.id
+
+    const listed = await sched.handleUserCommand("--list", "/tmp", "s1")
+    assert.match(listed.message, /loop task/)
+
+    const cancelled = await sched.handleUserCommand(`--cancel ${id}`, "/tmp", "s1")
+    assert.match(cancelled.message, /Cancelled/)
+    assert.equal(store.get(id), null)
+
+    const bad = await sched.handleUserCommand("--bogus do something", "/tmp", "s1")
+    assert.equal(bad.task, undefined)
+    assert.match(bad.message, /Unknown flag/)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("usage errors are in English", async () => {
+  const { sched, dir } = makeScheduler()
+  try {
+    const r = await sched.handleUserCommand("cancel", "/tmp", "s1")
+    assert.match(r.message, /Usage: \/loop cancel <taskId>/)
+    assert.doesNotMatch(r.message, /用法/)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+// --- c3: scheduling semantics ---
+
+test("bare /loop maintenance runs immediately and re-arms on the slow cycle", async () => {
+  const { sched, store, dir } = makeScheduler()
+  try {
+    const before = Date.now()
+    const r = await sched.handleUserCommand("", "/tmp", "s1")
+    assert.equal(r.task.mode, "maintenance")
+    assert.ok(r.modelPrompt, "maintenance prompt runs in the current turn")
+    assert.match(r.message, /Running now/)
+    const t = store.get(r.task.id)
+    assert.ok(t.lastFiredAt >= before, "marked as fired")
+    assert.ok(t.nextDueAt >= before + 3_500_000, "next run ~1h out")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("resume re-arms adaptive and maintenance tasks instead of catch-up firing (B6)", async () => {
+  const { sched, store, dir } = makeScheduler()
+  try {
+    const a = await sched.handleUserCommand("check things", "/tmp", "s1")
+    await store.reschedule(a.task.id, Date.now() - 60_000)
+    await sched.handleUserCommand(`pause ${a.task.id}`, "/tmp", "s1")
+    const rr = await sched.handleUserCommand(`resume ${a.task.id}`, "/tmp", "s1")
+    assert.match(rr.message, /Resumed/)
+    const after = store.get(a.task.id)
+    assert.ok(after.nextDueAt > Date.now(), "adaptive re-armed into the future")
+
+    const m = await sched.handleUserCommand("", "/tmp", "s1")
+    await store.reschedule(m.task.id, Date.now() - 60_000)
+    await sched.handleUserCommand(`pause ${m.task.id}`, "/tmp", "s1")
+    await sched.handleUserCommand(`resume ${m.task.id}`, "/tmp", "s1")
+    const mAfter = store.get(m.task.id)
+    assert.ok(mAfter.nextDueAt > Date.now() + 3_500_000, "maintenance re-armed ~1h out")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("fixed tasks re-arm from fire start, not fire completion (no drift)", async () => {
+  const { sched, store, dir } = makeScheduler()
+  try {
+    const r = await sched.handleUserCommand("60s --jitter=false say hi", "/tmp", "s1")
+    const t0 = 1_800_000_000_000
+    const mockCtx = { client: { session: { async prompt() { return { info: {}, parts: [] } } } } }
+    await sched.executeTask(store.get(r.task.id), mockCtx, t0)
+    const after = store.get(r.task.id)
+    assert.equal(after.nextDueAt, t0 + 60_000, "next fire anchored to fire start")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+// --- c4: --once one-shot tasks ---
+
+test("/loop 30s --once fires exactly once then auto-cancels", async () => {
+  const { sched, store, dir } = makeScheduler()
+  try {
+    const r = await sched.handleUserCommand("30s --once say hi", "/tmp", "s1")
+    assert.equal(r.task.mode, "fixed")
+    assert.equal(r.task.once, true)
+    assert.equal(r.task.prompt, "say hi")
+    assert.match(r.message, /runs once/)
+
+    const t0 = 1_800_000_000_000
+    const mockCtx = { client: { session: { async prompt() { return { info: {}, parts: [] } } } } }
+    await sched.executeTask(store.get(r.task.id), mockCtx, t0)
+    assert.equal(store.get(r.task.id), null, "task auto-cancelled after first fire")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("--once task survives a failed fire (retry next cycle)", async () => {
+  const { sched, store, dir } = makeScheduler()
+  try {
+    const r = await sched.handleUserCommand("30s --once say hi", "/tmp", "s1")
+    const failingCtx = { client: { session: { async prompt() { throw new Error("boom") } } } }
+    await sched.executeTask(store.get(r.task.id), failingCtx, 1_800_000_000_000)
+    assert.ok(store.get(r.task.id), "task kept for retry")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("--once without an interval is rejected", async () => {
+  const { sched, store, dir } = makeScheduler()
+  try {
+    const r = await sched.handleUserCommand("--once check things", "/tmp", "s1")
+    assert.equal(r.task, undefined)
+    assert.match(r.message, /--once is only supported for fixed/)
+    assert.equal(store.list().length, 0)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("list marks one-shot tasks", async () => {
+  const { sched, dir } = makeScheduler()
+  try {
+    await sched.handleUserCommand("30s --once say hi", "/tmp", "s1")
+    const r = await sched.handleUserCommand("list", "/tmp", "s1")
+    assert.match(r.message, /once/)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
