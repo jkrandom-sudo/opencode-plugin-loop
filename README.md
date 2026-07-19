@@ -16,6 +16,7 @@ A drop-in `/loop` command for [opencode](https://opencode.ai), modeled after Cla
 - **Internal ticker** — 5s loop drives task firing (no longer depends on `session.idle` events)
 - **Inflight guard** — double-set at ticker and `fireTask` level prevents double-firing even if opencode hot-reloads the plugin
 - **Persistent tasks** — survive session restarts; auto-migrated (tasks without `sessionID` are dropped on load)
+- **Ephemeral lifecycle (default)** — tasks die with the OpenCode process and are dropped on the next start, matching Claude Code's `/loop`. Set `ephemeralTasks: false` to persist tasks across process restarts
 - **Auto-cleanup on `session.deleted`** — all tasks for that session are cancelled automatically
 - **Configurable Jitter** — deterministic Fixed-task offset, controllable per command, tool call, or programmatic default
 - **Auto-expire** — tasks older than 7 days are removed on load
@@ -215,6 +216,17 @@ The built-in runtime defaults are:
 | Adaptive fallback range | 1 minute to 1 hour |
 | Scheduler ticker | 5 seconds |
 | New Fixed-task Jitter | enabled |
+| Ephemeral tasks | enabled |
+
+**Ephemeral lifecycle.** With `ephemeralTasks` enabled (the default), every
+`tasks.json` records the pid and start time of the process that wrote it. On
+load, tasks written by any other process — e.g. after OpenCode exits and
+restarts — are dropped, so loop tasks never outlive the process that created
+them (the same lifecycle as Claude Code's `/loop`). Same-process plugin reloads
+keep their tasks. Pass `{ ephemeralTasks: false }` in the plugin options to
+restore the previous behavior of persisting tasks across process restarts. Note
+that upgrading from a release without process-identity tracking drops the
+existing `tasks.json` once, since it carries no trusted writer identity.
 
 Adaptive minimum and maximum delays are persisted on each task. The random fallback
 and any model-requested `reschedule` are both constrained by that task's bounds. Jitter
@@ -238,11 +250,12 @@ Each `/loop` task carries a `sessionID` field:
 | User runs `/loop` in session B | Session B becomes active; A's task waits |
 | `session.deleted` for session A | All A's tasks cancelled automatically |
 | Plugin reload (`opencode` hot-reload) | Old tickers stop, new ticker starts; in-flight tasks guarded by `inflight` Set |
+| Process restart (new pid) | With `ephemeralTasks` enabled (default), all tasks from the previous process are dropped on load; with it disabled, tasks resume as before |
 | Old `tasks.json` without `sessionID` | Dropped on load (with log message) |
 
 ## Storage
 
-Tasks persist to `.opencode/cache/loop/tasks.json` (per project). Fire history is logged to `history.log` next to the store.
+Tasks persist to `.opencode/cache/loop/tasks.json` (per project). Fire history is logged to `history.log` next to the store. The state file also records the writer's `pid` and `startedAt`, which the ephemeral lifecycle uses to detect process restarts.
 
 ## Troubleshooting
 
