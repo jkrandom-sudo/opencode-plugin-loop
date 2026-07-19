@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { LoopStore } from "../dist/store.js"
@@ -616,6 +616,120 @@ test("ephemeral: empty legacy state adopts identity without a cleanup log", asyn
     await store.load()
     assert.equal(store.state.pid, process.pid)
     assert.equal(logCalls.length, 0, "nothing dropped, nothing logged")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+// --- merge-write (B1: concurrent instances sharing one tasks.json) ---
+
+test("merge-write: concurrent creates from two instances keep both tasks", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-test-"))
+  try {
+    const id = { pid: 1, startedAt: Date.now() }
+    const s1 = new LoopStore({ storageDir: dir, processIdentity: id })
+    const s2 = new LoopStore({ storageDir: dir, processIdentity: id })
+    await s1.load()
+    await s2.load()
+    await s1.create({ prompt: "from s1", mode: "fixed", intervalMs: 60_000, directory: "/tmp", sessionID: "sA" })
+    // s2 has stale in-memory state (does not know about s1's task)
+    await s2.create({ prompt: "from s2", mode: "fixed", intervalMs: 60_000, directory: "/tmp", sessionID: "sB" })
+
+    const s3 = new LoopStore({ storageDir: dir, processIdentity: id })
+    await s3.load()
+    const prompts = s3.list().map((t) => t.prompt).sort()
+    assert.deepEqual(prompts, ["from s1", "from s2"], "no task lost to last-writer-wins")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("merge-write: my cancel is not resurrected by a stale disk write", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-test-"))
+  try {
+    const id = { pid: 1, startedAt: Date.now() }
+    const s1 = new LoopStore({ storageDir: dir, processIdentity: id })
+    await s1.load()
+    const t = await s1.create({ prompt: "doomed", mode: "fixed", intervalMs: 60_000, directory: "/tmp", sessionID: "sA" })
+    await s1.cancel(t.id)
+
+    // A stale peer rewrites the cancelled task back to disk.
+    const disk = JSON.parse(readFileSync(join(dir, "tasks.json"), "utf-8"))
+    disk.tasks.push(t)
+    writeFileSync(join(dir, "tasks.json"), JSON.stringify(disk), "utf-8")
+
+    // s1's next write must keep the tombstone: the task stays gone.
+    await s1.create({ prompt: "new", mode: "fixed", intervalMs: 60_000, directory: "/tmp", sessionID: "sA" })
+    const s2 = new LoopStore({ storageDir: dir, processIdentity: id })
+    await s2.load()
+    assert.deepEqual(s2.list().map((x) => x.prompt), ["new"])
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("merge-write: tasks cancelled by another instance are accepted on next persist", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-test-"))
+  try {
+    const id = { pid: 1, startedAt: Date.now() }
+    const s1 = new LoopStore({ storageDir: dir, processIdentity: id })
+    const s2 = new LoopStore({ storageDir: dir, processIdentity: id })
+    await s1.load()
+    const t = await s1.create({ prompt: "shared", mode: "fixed", intervalMs: 60_000, directory: "/tmp", sessionID: "sA" })
+    await s2.load()
+    await s2.cancel(t.id)
+    // s1 still holds the task in memory and touches an unrelated field via create.
+    await s1.create({ prompt: "other", mode: "fixed", intervalMs: 60_000, directory: "/tmp", sessionID: "sA" })
+    assert.deepEqual(s1.list().map((x) => x.prompt), ["other"], "peer deletion accepted after merge")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("cancelAll also tombstones ids only present on disk", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-test-"))
+  try {
+    const id = { pid: 1, startedAt: Date.now() }
+    const s1 = new LoopStore({ storageDir: dir, processIdentity: id })
+    const s2 = new LoopStore({ storageDir: dir, processIdentity: id })
+    await s1.load()
+    await s1.create({ prompt: "mine", mode: "fixed", intervalMs: 60_000, directory: "/tmp", sessionID: "sA" })
+    await s2.load()
+    await s2.create({ prompt: "peer", mode: "fixed", intervalMs: 60_000, directory: "/tmp", sessionID: "sB" })
+    // s1's memory only knows "mine"; stop-all must also kill s2's "peer".
+    await s1.cancelAll()
+    const s3 = new LoopStore({ storageDir: dir, processIdentity: id })
+    await s3.load()
+    assert.equal(s3.list().length, 0)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+// --- history.log append + rotation (B3) ---
+
+test("logFire appends without rewriting and rotates at 1MB", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-test-"))
+  try {
+    const id = { pid: 1, startedAt: Date.now() }
+    const store = new LoopStore({ storageDir: dir, processIdentity: id })
+    await store.load()
+    const task = await store.create({ prompt: "x", mode: "fixed", intervalMs: 60_000, directory: "/tmp", sessionID: "s1" })
+    await store.logFire(task, true)
+    await store.logFire(task, false)
+    const lines = readFileSync(join(dir, "history.log"), "utf-8").trim().split("\n")
+    assert.equal(lines.length, 2)
+    assert.equal(JSON.parse(lines[0]).success, true)
+    assert.equal(JSON.parse(lines[1]).success, false)
+
+    // Force rotation: pre-fill beyond 1MB, then one more fire.
+    writeFileSync(join(dir, "history.log"), "x".repeat(1_048_577), "utf-8")
+    await store.logFire(task, true)
+    const { existsSync } = await import("node:fs")
+    assert.equal(existsSync(join(dir, "history.1.log")), true, "rotated backup exists")
+    const fresh = readFileSync(join(dir, "history.log"), "utf-8").trim().split("\n")
+    assert.equal(fresh.length, 1, "fresh log starts over")
+    assert.equal(JSON.parse(fresh[0]).success, true)
   } finally {
     rmSync(dir, { recursive: true })
   }

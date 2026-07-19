@@ -57,6 +57,13 @@ export interface LoopConfig {
    * keep the legacy behavior of persisting tasks across process restarts.
    */
   ephemeralTasks?: boolean
+  /**
+   * Single-leader instance lock (default true): when several plugin instances
+   * share one tasks.json (case-variant plugin paths, per-command `opencode
+   * run` instances), only the leader's ticker fires tasks. Set to false to
+   * disable coordination (not recommended).
+   */
+  instanceLock?: boolean
 }
 
 export interface CreateTaskInput {

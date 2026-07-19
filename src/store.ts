@@ -13,7 +13,7 @@
  * does NOT depend on `this`: every method reads from a closed-over `inst`.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
 import { join, dirname } from "node:path"
 import type { LoopTask, CreateTaskInput } from "./types.js"
 import { errorMessage, type LoopLogger } from "./runtime-feedback.js"
@@ -99,6 +99,24 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
     state.pid === identity.pid &&
     state.startedAt !== undefined &&
     Math.abs(state.startedAt - identity.startedAt) <= PID_START_TOLERANCE_MS
+  // Merge-write bookkeeping. Multiple plugin instances can share one
+  // tasks.json (case-variant plugin paths, per-command `opencode run`
+  // instances). `tombstones` are ids this instance cancelled — they must never
+  // be resurrected from another instance's stale write. `dirtyIds` are ids
+  // this instance touched — its version wins over the disk copy on merge.
+  const tombstones = new Set<string>()
+  const dirtyIds = new Set<string>()
+  const readDisk = (): PersistedState | null => {
+    try {
+      if (!existsSync(inst.filePath)) return null
+      const parsed = JSON.parse(readFileSync(inst.filePath, "utf-8")) as PersistedState
+      if (parsed?.version !== 1 || !Array.isArray(parsed.tasks)) return null
+      return parsed
+    } catch {
+      return null
+    }
+  }
+  const HISTORY_MAX_BYTES = 1_048_576
   const inst: LoopStoreInstance = {
     state: { version: 1, tasks: [] },
     filePath: "",
@@ -117,6 +135,8 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
         }
         if (ephemeralTasks && !isSameProcess(parsed)) {
           const dropped = parsed.tasks.length
+          // Tombstone every id so merge-write cannot resurrect them.
+          for (const t of parsed.tasks) tombstones.add(t.id)
           inst.state = { version: 1, tasks: [] }
           await inst.persist()
           if (dropped > 0) {
@@ -128,8 +148,14 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
           return
         }
         const cutoff = Date.now() - inst.taskTtlMs
-        const filtered = parsed.tasks.filter((t) => t.createdAt > cutoff && !!t.sessionID)
+        const filtered = parsed.tasks.filter((t) => t.createdAt > cutoff && !!t.sessionID && !tombstones.has(t.id))
+        // Tombstone load-time deletions (expired/orphan) so merge-write
+        // cannot resurrect them on the persist below.
+        for (const t of parsed.tasks) {
+          if (!filtered.includes(t)) tombstones.add(t.id)
+        }
         inst.state = { version: 1, tasks: filtered }
+        dirtyIds.clear()
         if (inst.state.tasks.length !== parsed.tasks.length) {
           await inst.persist()
           const dropped = parsed.tasks.length - inst.state.tasks.length
@@ -152,12 +178,33 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
       }
     },
     persist: async () => {
+      // Merge with the on-disk state instead of blindly overwriting it, so
+      // concurrent instances do not lose each other's tasks (B1).
+      const disk = readDisk()
+      if (disk) {
+        const diskIds = new Set(disk.tasks.map((t) => t.id))
+        const byId = new Map<string, LoopTask>()
+        for (const dt of disk.tasks) {
+          if (tombstones.has(dt.id)) continue
+          byId.set(dt.id, dt)
+        }
+        for (const t of inst.state.tasks) {
+          if (!dirtyIds.has(t.id) && !diskIds.has(t.id)) {
+            // Vanished from disk and untouched by us: another instance
+            // cancelled it — accept the deletion.
+            continue
+          }
+          byId.set(t.id, t)
+        }
+        inst.state.tasks = Array.from(byId.values())
+      }
       inst.state.pid = identity.pid
       inst.state.startedAt = identity.startedAt
       const tmp = `${inst.filePath}.tmp`
       mkdirSync(dirname(tmp), { recursive: true })
       writeFileSync(tmp, JSON.stringify(inst.state, null, 2), "utf-8")
       renameSync(tmp, inst.filePath)
+      dirtyIds.clear()
     },
     generateId: () => {
       const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
@@ -195,6 +242,7 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
         paused: false,
       }
       inst.state.tasks.push(task)
+      dirtyIds.add(task.id)
       await inst.persist()
       return task
     },
@@ -202,6 +250,8 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
       const idx = inst.state.tasks.findIndex((t) => t.id === id)
       if (idx < 0) return null
       const [removed] = inst.state.tasks.splice(idx, 1)
+      tombstones.add(id)
+      dirtyIds.delete(id)
       await inst.persist()
       return removed
     },
@@ -211,18 +261,28 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
       return inst.cancel(task.id)
     },
     cancelAll: async () => {
+      for (const t of inst.state.tasks) tombstones.add(t.id)
+      // Also tombstone ids only known to the disk copy (created by other
+      // instances) so stop-all --all really empties the shared file.
+      const disk = readDisk()
+      if (disk) for (const t of disk.tasks) tombstones.add(t.id)
       const n = inst.state.tasks.length
       inst.state.tasks = []
+      dirtyIds.clear()
       await inst.persist()
       return n
     },
     cancelBySession: async (sessionID) => {
       if (!sessionID) return 0
-      const before = inst.state.tasks.length
+      const removed = inst.state.tasks.filter((t) => t.sessionID === sessionID)
+      if (removed.length === 0) return 0
+      for (const t of removed) {
+        tombstones.add(t.id)
+        dirtyIds.delete(t.id)
+      }
       inst.state.tasks = inst.state.tasks.filter((t) => t.sessionID !== sessionID)
-      const removed = before - inst.state.tasks.length
-      if (removed > 0) await inst.persist()
-      return removed
+      await inst.persist()
+      return removed.length
     },
     list: () => [...inst.state.tasks],
     listBySession: (sessionID) => {
@@ -251,6 +311,7 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
       } else if (task.mode === "maintenance" && task.adaptiveMaxMs) {
         task.nextDueAt = task.lastFiredAt + task.adaptiveMaxMs
       }
+      dirtyIds.add(id)
       await inst.persist()
       return task
     },
@@ -258,6 +319,7 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
       const task = inst.get(id)
       if (!task) return null
       task.nextDueAt = nextDueAt
+      dirtyIds.add(id)
       await inst.persist()
       return task
     },
@@ -271,6 +333,7 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
       delete task.adaptiveMaxMs
       task.lastFiredAt = now
       task.nextDueAt = now + intervalMs
+      dirtyIds.add(id)
       await inst.persist()
       return task
     },
@@ -278,23 +341,29 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
       const task = inst.get(id)
       if (!task) return null
       task.paused = paused
+      dirtyIds.add(id)
       await inst.persist()
       return task
     },
     logFire: async (task, success) => {
       const logFile = join(dirname(inst.filePath), "history.log")
-      const line = JSON.stringify({
-        ts: Date.now(),
-        taskId: task.id,
-        mode: task.mode,
-        sessionID: task.sessionID,
-        prompt: task.prompt.slice(0, 200),
-        success,
-      })
+      const line =
+        JSON.stringify({
+          ts: Date.now(),
+          taskId: task.id,
+          mode: task.mode,
+          sessionID: task.sessionID,
+          prompt: task.prompt.slice(0, 200),
+          success,
+        }) + "\n"
       try {
         mkdirSync(dirname(logFile), { recursive: true })
-        const existing = existsSync(logFile) ? readFileSync(logFile, "utf-8") : ""
-        writeFileSync(logFile, existing + line + "\n", "utf-8")
+        // O(1) append instead of read-rewrite (B3). Rotate BEFORE appending
+        // when the log is oversize, keeping a single backup.
+        if (existsSync(logFile) && statSync(logFile).size > HISTORY_MAX_BYTES) {
+          renameSync(logFile, join(dirname(inst.filePath), "history.1.log"))
+        }
+        appendFileSync(logFile, line, "utf-8")
       } catch (err) {
         await logger("warn", "failed to write fire history", {
           error: errorMessage(err),

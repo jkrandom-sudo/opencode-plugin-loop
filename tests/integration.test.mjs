@@ -355,11 +355,14 @@ test("TUI-safe /loop list uses toast and consumes the model-facing command", asy
     assert.match(toastCalls[0].body.message, /loop task/i)
     assert.doesNotMatch(output.parts[0].text, /^list$/)
     assert.match(output.parts[0].text, /already handled/i)
-    assert.equal(logCalls.length, 1)
-    assert.equal(logCalls[0].throwOnError, true)
-    assert.equal(logCalls[0].body.extra.action, "list")
-    assert.equal(logCalls[0].body.extra.argumentLength, 4)
-    assert.equal(logCalls[0].body.extra.command, undefined)
+    // The instance lock also logs ("loop instance lock acquired") — select
+    // the command log entry.
+    const commandLogs = logCalls.filter((c) => c.body?.extra?.action !== undefined)
+    assert.equal(commandLogs.length, 1)
+    assert.equal(commandLogs[0].throwOnError, true)
+    assert.equal(commandLogs[0].body.extra.action, "list")
+    assert.equal(commandLogs[0].body.extra.argumentLength, 4)
+    assert.equal(commandLogs[0].body.extra.command, undefined)
   } finally {
     if (hooks) await hooks.dispose()
     console.log = originalConsole.log
@@ -520,10 +523,11 @@ test("toast transport failure is recorded in structured logs", async () => {
       { parts: [] }
     )
 
-    assert.equal(logCalls.length, 2)
-    assert.equal(logCalls[1].body.level, "warn")
-    assert.equal(logCalls[1].body.message, "failed to show loop command result")
-    assert.equal(logCalls[1].body.extra.error, "toast unavailable")
+    // Lock acquisition adds a log entry; find the toast-failure warn.
+    const warn = logCalls.find((c) => c.body?.message === "failed to show loop command result")
+    assert.ok(warn, "toast failure recorded")
+    assert.equal(warn.body.level, "warn")
+    assert.equal(warn.body.extra.error, "toast unavailable")
   } finally {
     if (hooks) await hooks.dispose()
     rmSync(dir, { recursive: true })
