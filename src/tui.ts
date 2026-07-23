@@ -18,7 +18,7 @@ import {
 import {
   LOOP_COPY_TITLE,
   createLoopFeedbackModel,
-  isLoopFeedbackToast,
+  isLoopTaskListToast,
   type LoopFeedbackInput,
 } from "./tui-feedback-model.js"
 
@@ -37,6 +37,7 @@ const defaultDependencies: Required<LoopTuiDependencies> = {
     return LoopFeedbackDialog({
       message: input.message,
       variant: input.variant,
+      tasks: input.tasks,
       actions: input.actions,
       theme: input.theme,
       onActivate: input.onActivate,
@@ -134,6 +135,7 @@ export function createLoopTuiPlugin(
               api,
               message: model.message,
               variant: model.variant,
+              tasks: model.tasks,
               actions,
               theme: api.theme.current,
               onActivate(action: LoopDialogAction) {
@@ -157,7 +159,7 @@ export function createLoopTuiPlugin(
     }
 
     const unsubscribe = api.event.on("tui.toast.show", (event) => {
-      if (!isLoopFeedbackToast(event)) return
+      if (!isLoopTaskListToast(event)) return
       openFeedback(event.properties)
     })
 

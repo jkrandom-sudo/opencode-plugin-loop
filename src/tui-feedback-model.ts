@@ -8,10 +8,20 @@ export interface LoopFeedbackInput {
   variant: LoopFeedbackVariant
 }
 
+export interface LoopTaskInfo {
+  readonly id: string
+  readonly status: "active" | "paused"
+  readonly interval: string
+  readonly prompt: string
+  readonly once: boolean
+  readonly session?: string
+}
+
 export interface LoopFeedbackModel {
   readonly message: string
   readonly variant: LoopFeedbackVariant
   readonly taskIds: readonly string[]
+  readonly tasks: readonly LoopTaskInfo[]
 }
 
 interface IndexedTaskId {
@@ -24,6 +34,29 @@ const TASK_ID_PATTERNS = [
   new RegExp(`\\[id=(${TASK_ID})\\]`, "g"),
   new RegExp(`^\\s*\\[(${TASK_ID})\\]`, "gm"),
 ]
+
+const TASK_LINE = /^\s*\[([A-Za-z0-9_-]+)\](?:\s+\[s:([^\]]+)\])?\s+(▶ active|⏸ paused)\s+•\s+(.+?)\s+•\s+(.*)$/
+const ONCE_PREFIX = "once • "
+
+export function parseLoopTaskList(message: string): LoopTaskInfo[] {
+  const tasks: LoopTaskInfo[] = []
+  for (const line of message.split("\n")) {
+    const match = TASK_LINE.exec(line)
+    if (!match) continue
+    const [, id, session, status, interval, rest] = match
+    if (!id || !status || !interval) continue
+    const once = rest.startsWith(ONCE_PREFIX)
+    tasks.push({
+      id,
+      status: status.startsWith("⏸") ? "paused" : "active",
+      interval,
+      prompt: once ? rest.slice(ONCE_PREFIX.length) : rest,
+      once,
+      ...(session ? { session } : {}),
+    })
+  }
+  return tasks
+}
 
 export function extractTaskIds(message: string): string[] {
   const matches: IndexedTaskId[] = []
@@ -49,10 +82,14 @@ export function extractTaskIds(message: string): string[] {
 
 export function createLoopFeedbackModel(input: LoopFeedbackInput): LoopFeedbackModel {
   const taskIds = Object.freeze(extractTaskIds(input.message))
+  const tasks = Object.freeze(
+    input.variant === "info" ? parseLoopTaskList(input.message) : []
+  )
   return Object.freeze({
     message: input.message,
     variant: input.variant,
     taskIds,
+    tasks,
   })
 }
 
@@ -76,4 +113,11 @@ export function isLoopFeedbackToast(event: unknown): event is {
     typeof event.properties.message === "string" &&
     isVariant(event.properties.variant)
   )
+}
+
+export function isLoopTaskListToast(event: unknown): event is {
+  type: "tui.toast.show"
+  properties: LoopFeedbackInput & Record<string, unknown>
+} {
+  return isLoopFeedbackToast(event) && event.properties.variant === "info"
 }
