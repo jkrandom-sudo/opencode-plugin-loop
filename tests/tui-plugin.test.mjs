@@ -132,14 +132,46 @@ test("exports a TUI-only OpenCode plugin module", () => {
   assert.equal(LoopTuiModule.server, undefined)
 })
 
-test("shows variant-aware status treatment in the dialog title", async () => {
+test("opens the dialog only for task list toasts", async () => {
   const api = createFakeApi()
   await createTestLoopTuiPlugin()(api)
 
-  emitLoop(api, "Created", "success")
-  assert.equal(api.__view().variant, "success")
-  emitLoop(api, "Failed", "error")
-  assert.equal(api.__view().variant, "error")
+  emitLoop(api, "🔁 Loop started [id=abc123]", "success")
+  assert.equal(api.ui.dialog.open, false)
+
+  emitLoop(api, "❌ No task abc123", "error")
+  assert.equal(api.ui.dialog.open, false)
+
+  emitLoop(api, "📋 1 loop task(s):\n  [abc123] ▶ active • every 60s • work", "info")
+  assert.equal(api.ui.dialog.open, true)
+  assert.equal(api.__view().variant, "info")
+})
+
+test("passes parsed tasks to the dialog view", async () => {
+  const api = createFakeApi()
+  await createTestLoopTuiPlugin()(api)
+
+  emitLoop(
+    api,
+    "📋 2 loop task(s):\n  [first01] ▶ active • every 60s • check the build\n  [second2] ⏸ paused • every 30s • once • ping",
+  )
+
+  assert.deepEqual(api.__view().tasks, [
+    {
+      id: "first01",
+      status: "active",
+      interval: "every 60s",
+      prompt: "check the build",
+      once: false,
+    },
+    {
+      id: "second2",
+      status: "paused",
+      interval: "every 30s",
+      prompt: "ping",
+      once: true,
+    },
+  ])
 })
 
 test("opens one native dialog with per-task copy actions", async () => {
@@ -174,9 +206,9 @@ test("copies the exact complete feedback text", async () => {
   await createTestLoopTuiPlugin({
     writeClipboard: async (text) => copied.push(text),
   })(api)
-  const message = "Loop started [id=abc123]\nCancel: /loop cancel abc123"
+  const message = "📋 1 loop task(s):\n  [abc123] ▶ active • every 60s • work"
 
-  emitLoop(api, message, "success")
+  emitLoop(api, message, "info")
   select(api, "Copy all")
   await settle()
 
@@ -194,7 +226,7 @@ test("keeps the dialog open and reports clipboard errors without recursion", asy
     },
   })(api)
 
-  emitLoop(api, "Loop started [id=abc123]", "success")
+  emitLoop(api, "📋 1 loop task(s):\n  [abc123] ▶ active • every 60s • work", "info")
   select(api, "Copy ID: abc123")
   await settle()
 
@@ -208,8 +240,8 @@ test("replaces prior Loop feedback instead of stacking dialogs", async () => {
   const api = createFakeApi()
   await createTestLoopTuiPlugin()(api)
 
-  emitLoop(api, "Loop started [id=first01]", "success")
-  emitLoop(api, "Loop started [id=second2]", "success")
+  emitLoop(api, "📋 1 loop task(s):\n  [first01] ▶ active • every 60s • work", "info")
+  emitLoop(api, "📋 1 loop task(s):\n  [second2] ▶ active • every 30s • work", "info")
 
   assert.equal(api.ui.dialog.depth, 1)
   assert.match(api.__view().message, /second2/)
@@ -234,7 +266,7 @@ test("mounts dialog interaction without a plugin-level keymap layer", async () =
   const api = createFakeApi()
   await createTestLoopTuiPlugin()(api)
 
-  emitLoop(api, "Loop started [id=abc123]", "success")
+  emitLoop(api, "📋 1 loop task(s):\n  [abc123] ▶ active • every 60s • work", "info")
   assert.equal(api.ui.dialog.open, true)
   assert.equal(typeof api.__view().onClose, "function")
   assert.equal(api.__layers.length, 0)
@@ -249,9 +281,9 @@ test("a slow copy from a replaced dialog cannot close the current dialog", async
     }),
   })(api)
 
-  emitLoop(api, "Loop started [id=first01]", "success")
+  emitLoop(api, "📋 1 loop task(s):\n  [first01] ▶ active • every 60s • work", "info")
   select(api, "Copy ID: first01")
-  emitLoop(api, "Loop started [id=second2]", "success")
+  emitLoop(api, "📋 1 loop task(s):\n  [second2] ▶ active • every 30s • work", "info")
   assert.match(api.__view().message, /second2/)
 
   resolveCopy()
@@ -270,12 +302,12 @@ test("ignores unrelated toasts and cleans up all owned state on disposal", async
   })
   assert.equal(api.ui.dialog.open, false)
 
-  emitLoop(api, "Loop started [id=abc123]", "success")
+  emitLoop(api, "📋 1 loop task(s):\n  [abc123] ▶ active • every 60s • work", "info")
   await api.__dispose()
   assert.equal(api.ui.dialog.open, false)
   assert.equal(api.__layers.filter((layer) => layer.active).length, 0)
 
-  emitLoop(api, "Loop started [id=after01]", "success")
+  emitLoop(api, "📋 1 loop task(s):\n  [after01] ▶ active • every 60s • work", "info")
   assert.equal(api.ui.dialog.open, false)
 })
 
@@ -289,7 +321,8 @@ test("cleans up and logs when dialog rendering fails, then recovers", async () =
     },
   })(api)
 
-  assert.doesNotThrow(() => emitLoop(api, "First [id=first01]", "success"))
+  assert.doesNotThrow(() =>
+    emitLoop(api, "📋 1 loop task(s):\n  [first01] ▶ active • every 60s • work", "info"))
   await settle()
   assert.equal(api.ui.dialog.open, false)
   assert.equal(api.__layers.filter((layer) => layer.active).length, 0)
@@ -299,7 +332,7 @@ test("cleans up and logs when dialog rendering fails, then recovers", async () =
   assert.match(api.__logs[0].message, /dialog/i)
 
   failRender = false
-  emitLoop(api, "Second [id=second2]", "success")
+  emitLoop(api, "📋 1 loop task(s):\n  [second2] ▶ active • every 30s • work", "info")
   assert.equal(api.ui.dialog.open, true)
   assert.match(api.__view().message, /second2/)
 })
@@ -311,7 +344,7 @@ test("does not depend on plugin-level keymap registration", async () => {
   }
   await createTestLoopTuiPlugin()(api)
 
-  emitLoop(api, "Loop started [id=second2]", "success")
+  emitLoop(api, "📋 1 loop task(s):\n  [second2] ▶ active • every 30s • work", "info")
   assert.equal(api.ui.dialog.open, true)
   assert.equal(api.__logs.length, 0)
 })

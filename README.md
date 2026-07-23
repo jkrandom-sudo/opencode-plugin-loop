@@ -29,10 +29,10 @@ A drop-in `/loop` command for [opencode](https://opencode.ai), modeled after Cla
 - **Auto-expire** — tasks idle for more than 7 days are removed on load (active tasks never expire)
 - **Max 50 concurrent tasks**
 - **LLM-callable tools** — `loop_schedule`, `loop_status` (session-bound by default)
-- **Interactive Loop results** — `/loop` results open in a dedicated native dialog instead of writing over the prompt
+- **Interactive task list** — `/loop list` and `/loop status` open a dedicated native dialog with selectable task rows instead of writing over the prompt; start/cancel/pause/resume stay silent, failures surface as error toasts
 - **Clipboard actions** — copy the complete result or copy any displayed task ID with one action
 - **Keyboard and mouse navigation** — move with `Up`/`Down` or `Tab`/`Shift+Tab`, hover with the pointer, and activate with `Enter`, `Space`, or a click
-- **Responsive layout** — short or narrow terminals keep the dialog inside the viewport with independently scrollable result and action areas
+- **Responsive layout** — short or narrow terminals keep the dialog inside the viewport with a scrollable task list
 - **Easy dismissal** — choose **Close**, press `q`, or use the native dialog's `Esc` key
 
 ## Requirements
@@ -187,15 +187,15 @@ If you try `cancel <id>` for a task owned by another session, you'll get a refus
 
 Two behavioral differences worth knowing: tasks only fire for the **currently active session** (switch sessions and the others wait; switch back and they catch up once), and fixed tasks fire on a 5-second ticker rather than exact wall-clock cron times (up to one ticker period late).
 
-### Interactive result dialog
+### Interactive task list dialog
 
-Every `/loop` command result opens in a separate native OpenCode dialog. It keeps task output away from the prompt and provides:
+`/loop list` and `/loop status` open a native OpenCode dialog rendering your tasks as a selectable, color-coded list (▶ active, ⏸ paused). Starting, cancelling, pausing, or resuming a task stays silent; failures surface as error toasts. The dialog provides:
 
-- **Copy ID: `<taskId>`** for every distinct task shown in the result
+- A highlighted **task row** per task — press `Enter` to copy its task ID
 - **Copy all** for the exact complete result text
 - **Close** to dismiss the dialog
 
-Use `Up`/`Down` or `Tab`/`Shift+Tab` to change the selected action, then press `Enter` or `Space` to activate it. Moving the mouse over a row selects it, and clicking activates that exact row. A successful **Copy ID** or **Copy all** action shows a confirmation and closes the dialog immediately; if clipboard access fails, the dialog stays open and shows an error. Press `Page Up` or `Page Down` to scroll long result text, or press `q` or `Esc` to close. In short or narrow terminals, the dialog scales to the available viewport and keeps the result and action lists independently scrollable. A newer Loop result replaces the previous Loop dialog rather than stacking another one.
+Use `Up`/`Down` or `Tab`/`Shift+Tab` to change the selected row, then press `Enter` or `Space` to activate it. Moving the mouse over a row selects it, and clicking activates that exact row. A successful copy shows a confirmation and closes the dialog immediately; if clipboard access fails, the dialog stays open and shows an error. Press `Page Up` or `Page Down` to scroll long lists, or press `q` or `Esc` to close. In short or narrow terminals, the dialog scales to the available viewport and keeps the list scrollable. A newer Loop result replaces the previous Loop dialog rather than stacking another one.
 
 ### Programmatic (LLM tools)
 

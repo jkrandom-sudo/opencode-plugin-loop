@@ -71,13 +71,17 @@ export async function showLoopResult(
   result: CommandParseResult,
   logger: LoopLogger
 ): Promise<void> {
+  const variant = toastVariant(result.message)
+  // Non-view results (start/cancel/pause/resume/stop-all) stay silent by design;
+  // only task lists (info) and failures (error) surface a toast.
+  if (variant === "success") return
   try {
     await client.tui.showToast({
       throwOnError: true,
       body: {
         title: LOOP_FEEDBACK_TITLE,
         message: result.message,
-        variant: toastVariant(result.message),
+        variant,
         duration: toastDuration(result.message),
       },
     })

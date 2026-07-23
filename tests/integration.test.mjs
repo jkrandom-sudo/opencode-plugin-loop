@@ -372,6 +372,42 @@ test("TUI-safe /loop list uses toast and consumes the model-facing command", asy
   }
 })
 
+test("starting a loop stays silent on the TUI", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-int-"))
+  let hooks
+  try {
+    const toastCalls = []
+    const mockClient = {
+      app: { async log() { return true } },
+      tui: {
+        async showToast(args) {
+          toastCalls.push(args)
+          return true
+        },
+      },
+    }
+    hooks = await pluginModule.LoopPlugin({
+      client: mockClient,
+      project: { id: "test" },
+      directory: dir,
+      worktree: dir,
+      $: {},
+      serverUrl: new URL("http://localhost:3000"),
+      experimental_workspace: { register: () => {} },
+    })
+
+    await hooks["command.execute.before"](
+      { command: "loop", arguments: "5m check the build", sessionID: "sA" },
+      { parts: [{ id: "p1", sessionID: "sA", messageID: "m1", type: "text", text: "5m check the build" }] }
+    )
+
+    assert.equal(toastCalls.length, 0)
+  } finally {
+    if (hooks) await hooks.dispose()
+    rmSync(dir, { recursive: true })
+  }
+})
+
 test("command failure becomes an error toast instead of rejecting", async () => {
   const dir = mkdtempSync(join(tmpdir(), "loop-int-"))
   let hooks
