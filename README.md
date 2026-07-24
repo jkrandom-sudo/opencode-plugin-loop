@@ -29,18 +29,12 @@ A drop-in `/loop` command for [opencode](https://opencode.ai), modeled after Cla
 - **Auto-expire** — tasks idle for more than 7 days are removed on load (active tasks never expire)
 - **Max 50 concurrent tasks**
 - **LLM-callable tools** — `loop_schedule`, `loop_status` (session-bound by default)
-- **Interactive task list** — `/loop list` and `/loop status` open a dedicated native dialog with selectable task rows instead of writing over the prompt; start/cancel/pause/resume stay silent, failures surface as error toasts
-- **Clipboard actions** — copy the complete result or copy any displayed task ID with one action
-- **Keyboard and mouse navigation** — move with `Up`/`Down` or `Tab`/`Shift+Tab`, hover with the pointer, and activate with `Enter`, `Space`, or a click
-- **Responsive layout** — short or narrow terminals keep the dialog inside the viewport with a scrollable task list
-- **Easy dismissal** — choose **Close**, press `q`, or use the native dialog's `Esc` key
+- **Inline results, Claude Code style** — every `/loop` result (create, list, cancel, pause, resume, stop-all, failures) is presented by the model directly in the conversation, in the user's own language — task lists render as a markdown table. No dialogs, no toasts
 
 ## Requirements
 
-- OpenCode **1.17.18 or newer** for the interactive TUI companion
+- OpenCode **1.17.18 or newer**
 - Node.js **18 or newer**
-
-The scheduling server plugin still has a native toast fallback, while supported OpenCode versions install both package entrypoints automatically.
 
 ## Install
 
@@ -187,15 +181,16 @@ If you try `cancel <id>` for a task owned by another session, you'll get a refus
 
 Two behavioral differences worth knowing: tasks only fire for the **currently active session** (switch sessions and the others wait; switch back and they catch up once), and fixed tasks fire on a 5-second ticker rather than exact wall-clock cron times (up to one ticker period late).
 
-### Interactive task list dialog
+### Inline results
 
-`/loop list` and `/loop status` open a native OpenCode dialog rendering your tasks as a selectable, color-coded list (▶ active, ⏸ paused). Starting, cancelling, pausing, or resuming a task stays silent; failures surface as error toasts. The dialog provides:
+Every `/loop` command result is presented by the model directly in the conversation — Claude Code style, in the same language you used:
 
-- A highlighted **task row** per task — press `Enter` to copy its task ID
-- **Copy all** for the exact complete result text
-- **Close** to dismiss the dialog
+- **Create** — a short confirmation with the task, schedule, and job ID (plus how to cancel)
+- **List / status** — a markdown table of your tasks (Job ID, frequency, content, type) with the management commands below it
+- **Cancel / pause / resume / stop-all** — a concise confirmation of what changed and whether the task will trigger again
+- **Failures** — a brief explanation of what went wrong
 
-Use `Up`/`Down` or `Tab`/`Shift+Tab` to change the selected row, then press `Enter` or `Space` to activate it. Moving the mouse over a row selects it, and clicking activates that exact row. A successful copy shows a confirmation and closes the dialog immediately; if clipboard access fails, the dialog stays open and shows an error. Press `Page Up` or `Page Down` to scroll long lists, or press `q` or `Esc` to close. In short or narrow terminals, the dialog scales to the available viewport and keeps the list scrollable. A newer Loop result replaces the previous Loop dialog rather than stacking another one.
+No dialogs, no toasts — the conversation is the only output surface.
 
 ### Programmatic (LLM tools)
 
@@ -292,7 +287,7 @@ Tasks persist to `.opencode/cache/loop/tasks.json` (per project). Fire history i
 
 ### Package entrypoints
 
-Current releases expose separate `opencode-plugin-loop/server` and `opencode-plugin-loop/tui` entrypoints so OpenCode can load the scheduler and responsive interactive dialog independently. The root export remains the v1-compatible server module for backward compatibility. Programmatic consumers should use the named factory:
+Current releases expose separate `opencode-plugin-loop/server` and `opencode-plugin-loop/tui` entrypoints so OpenCode installs that auto-load both keep working (the TUI entrypoint is a no-op since results are presented inline). The root export remains the v1-compatible server module for backward compatibility. Programmatic consumers should use the named factory:
 
 ```typescript
 import { LoopPlugin } from "opencode-plugin-loop"
@@ -300,7 +295,7 @@ import { LoopPlugin } from "opencode-plugin-loop"
 
 ### Task lines overlap the input area
 
-Older releases wrote `/loop` results directly to the terminal. OpenCode owns and redraws the terminal UI, so those writes could leave task IDs and prompts over the input area. Upgrade to the current release for the responsive interactive dialog; runtime diagnostics go to OpenCode's structured application log.
+Older releases wrote `/loop` results directly to the terminal or into native dialogs/toasts. Upgrade to the current release: every result is presented inline by the model, and runtime diagnostics go to OpenCode's structured application log.
 
 Also make sure the plugin is installed from only one source. OpenCode loads npm plugins from `opencode.json` and copied plugins under `~/.config/opencode/plugins/` independently, even when they have the same package name.
 

@@ -33,10 +33,10 @@ import { buildLoopTools } from "./tools/loop-tools.js"
 import type { LoopConfig } from "./types.js"
 import {
   buildLoopFailedPrompt,
+  buildLoopResultPrompt,
   consumeLoopCommand,
   createLoopLogger,
   errorMessage,
-  showLoopResult,
 } from "./runtime-feedback.js"
 
 const DEFAULT_CONFIG: Required<LoopConfig> = {
@@ -185,6 +185,8 @@ export const LoopPlugin: Plugin = async (ctx) => {
       }
       if (result.message.startsWith("❌") && !result.modelPrompt) {
         result.modelPrompt = buildLoopFailedPrompt(result.message)
+      } else if (!result.modelPrompt) {
+        result.modelPrompt = buildLoopResultPrompt(result.message)
       }
       consumeLoopCommand(output.parts, result.modelPrompt)
       await logger(result.message.startsWith("❌") ? "error" : "info", result.message, {
@@ -192,7 +194,6 @@ export const LoopPlugin: Plugin = async (ctx) => {
         action: commandAction(args),
         argumentLength: args.length,
       })
-      await showLoopResult(ctx.client, result, logger, { storageDir, directory: ctx.directory })
     },
   }
 

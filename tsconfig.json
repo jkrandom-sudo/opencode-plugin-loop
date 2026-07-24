@@ -13,10 +13,14 @@
     "declarationMap": false,
     "sourceMap": false,
     "resolveJsonModule": true,
-    "allowSyntheticDefaultImports": true,
-    "jsx": "preserve",
-    "jsxImportSource": "@opentui/solid"
+    "allowSyntheticDefaultImports": true
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "tests"]
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "tests"
+  ]
 }
