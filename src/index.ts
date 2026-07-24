@@ -32,6 +32,7 @@ import { Jitter } from "./jitter.js"
 import { buildLoopTools } from "./tools/loop-tools.js"
 import type { LoopConfig } from "./types.js"
 import {
+  buildLoopFailedPrompt,
   consumeLoopCommand,
   createLoopLogger,
   errorMessage,
@@ -182,13 +183,16 @@ export const LoopPlugin: Plugin = async (ctx) => {
       } catch (error) {
         result = { message: `❌ /loop failed: ${errorMessage(error)}` }
       }
+      if (result.message.startsWith("❌") && !result.modelPrompt) {
+        result.modelPrompt = buildLoopFailedPrompt(result.message)
+      }
       consumeLoopCommand(output.parts, result.modelPrompt)
       await logger(result.message.startsWith("❌") ? "error" : "info", result.message, {
         sessionID: input.sessionID,
         action: commandAction(args),
         argumentLength: args.length,
       })
-      await showLoopResult(ctx.client, result, logger)
+      await showLoopResult(ctx.client, result, logger, { storageDir, directory: ctx.directory })
     },
   }
 

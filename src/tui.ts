@@ -5,6 +5,9 @@ import type {
 } from "@opencode-ai/plugin/tui"
 import type { JSX } from "@opentui/solid"
 import clipboardy from "clipboardy"
+import { watch } from "node:fs"
+import { mkdirSync } from "node:fs"
+import { join } from "node:path"
 
 import {
   createLoopActionRunner,
@@ -16,9 +19,14 @@ import {
   type LoopFeedbackDialogProps,
 } from "./tui-dialog-view.js"
 import {
+  LOOP_FEEDBACK_FILE,
+  loopFeedbackPath,
+  readLoopFeedback,
+  type LoopFeedbackPayload,
+} from "./feedback-channel.js"
+import {
   LOOP_COPY_TITLE,
   createLoopFeedbackModel,
-  isLoopTaskListToast,
   type LoopFeedbackInput,
 } from "./tui-feedback-model.js"
 
@@ -29,6 +37,11 @@ export interface LoopDialogRenderInput extends LoopFeedbackDialogProps {
 export interface LoopTuiDependencies {
   writeClipboard(text: string): Promise<void>
   renderDialog?(input: LoopDialogRenderInput): JSX.Element
+  getDirectory?(api: TuiPluginApi): Promise<string>
+  watchFeedback?(
+    storageDir: string,
+    onFeedback: (payload: LoopFeedbackPayload) => void
+  ): () => void
 }
 
 const defaultDependencies: Required<LoopTuiDependencies> = {
@@ -44,6 +57,33 @@ const defaultDependencies: Required<LoopTuiDependencies> = {
       onClose: input.onClose,
     })
   },
+  async getDirectory(api) {
+    try {
+      const res = await api.client.path.get()
+      const directory = (res as { data?: { directory?: unknown } })?.data
+        ?.directory
+      if (typeof directory === "string" && directory) return directory
+    } catch {
+      // Fall back to the TUI process working directory below.
+    }
+    return process.cwd()
+  },
+  watchFeedback(storageDir, onFeedback) {
+    mkdirSync(storageDir, { recursive: true })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const watcher = watch(storageDir, (_event, filename) => {
+      if (filename !== LOOP_FEEDBACK_FILE) return
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => {
+        const payload = readLoopFeedback(loopFeedbackPath(storageDir))
+        if (payload) onFeedback(payload)
+      }, 50)
+    })
+    return () => {
+      if (timer) clearTimeout(timer)
+      watcher.close()
+    }
+  },
 }
 
 export function createLoopTuiPlugin(
@@ -55,6 +95,7 @@ export function createLoopTuiPlugin(
   }
 
   return async (api) => {
+    const startedAt = Date.now()
     let latestGeneration = 0
     let ownedGeneration: number | undefined
 
@@ -158,13 +199,16 @@ export function createLoopTuiPlugin(
       }
     }
 
-    const unsubscribe = api.event.on("tui.toast.show", (event) => {
-      if (!isLoopTaskListToast(event)) return
-      openFeedback(event.properties)
+    const directory = await dependencies.getDirectory(api)
+    const storageDir = join(directory, ".opencode", "cache", "loop")
+    const unwatch = dependencies.watchFeedback(storageDir, (payload) => {
+      if (payload.ts < startedAt) return
+      if (payload.directory !== directory) return
+      openFeedback({ message: payload.message, variant: "info" })
     })
 
     api.lifecycle.onDispose(() => {
-      unsubscribe()
+      unwatch()
       close()
     })
   }
