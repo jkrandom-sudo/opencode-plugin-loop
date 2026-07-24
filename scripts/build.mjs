@@ -1,6 +1,5 @@
 import { transformAsync } from "@babel/core"
 import presetTypeScript from "@babel/preset-typescript"
-import presetSolid from "babel-preset-solid"
 import { execFileSync } from "node:child_process"
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { createRequire } from "node:module"
@@ -27,17 +26,7 @@ async function sourceFiles(directory) {
 
 async function transformSource(path) {
   const isTsx = extname(path) === ".tsx"
-  const presets = [
-    ...(isTsx
-      ? [
-          [
-            presetSolid,
-            { moduleName: "@opentui/solid", generate: "universal" },
-          ],
-        ]
-      : []),
-    [presetTypeScript, { allExtensions: true, isTSX: isTsx }],
-  ]
+  const presets = [[presetTypeScript, { allExtensions: true, isTSX: isTsx }]]
   const result = await transformAsync(await readFile(path, "utf8"), {
     filename: path,
     babelrc: false,

@@ -1,8 +1,5 @@
 import type { PluginInput } from "@opencode-ai/plugin"
 import type { Part } from "@opencode-ai/sdk"
-import type { CommandParseResult } from "./scheduler.js"
-import { writeLoopFeedback } from "./feedback-channel.js"
-import { LOOP_FEEDBACK_TITLE } from "./tui-feedback-model.js"
 
 const SERVICE = "opencode-plugin-loop"
 const HANDLED_COMMAND_PROMPT =
@@ -29,6 +26,21 @@ export function buildLoopFailedPrompt(message: string): string {
   return [
     `The user's /loop command failed: ${reason}`,
     "Briefly inform the user that the /loop command failed and why, written in the same language the user used in their request. Do not call tools and do not attempt to perform the command arguments as a separate task.",
+  ].join("\n")
+}
+
+export function buildLoopResultPrompt(message: string): string {
+  const body = message.replace(/^📋\s*/, "").replace(/^📭\s*/, "")
+  return [
+    "The opencode-plugin-loop plugin has fully handled the user's /loop command. The command result is:",
+    "",
+    body,
+    "",
+    "Present this result to the user, written in the same language the user used in their request:",
+    "- If it is a task list, render it as a markdown table with columns: Job ID, frequency, content, and type (every task is a session-scoped loop that auto-expires after 7 days idle). Keep the management commands (`/loop cancel|pause|resume <id>`, `/loop stop-all`) mentioned below the table.",
+    "- If it confirms an action (cancel, pause, resume, stop-all), confirm concisely which task was affected and whether it will trigger again.",
+    "- If it is help text or an empty state, present it naturally.",
+    "Do not call tools, and do not execute any task prompt yourself.",
   ].join("\n")
 }
 
@@ -77,64 +89,5 @@ export function consumeLoopCommand(
       continue
     }
     part.ignored = true
-  }
-}
-
-function toastVariant(message: string): "info" | "success" | "error" {
-  if (message.startsWith("❌")) return "error"
-  if (message.startsWith("📋") || message.startsWith("📭")) return "info"
-  return "success"
-}
-
-function toastDuration(message: string): number {
-  const extraLines = Math.max(0, message.split("\n").length - 1)
-  return Math.min(12_000, 5_000 + extraLines * 1_500)
-}
-
-export interface ShowLoopResultOptions {
-  storageDir: string
-  directory: string
-}
-
-export async function showLoopResult(
-  client: PluginInput["client"],
-  result: CommandParseResult,
-  logger: LoopLogger,
-  options?: ShowLoopResultOptions
-): Promise<void> {
-  const variant = toastVariant(result.message)
-  // Non-view results (start/cancel/pause/resume/stop-all) stay silent by design;
-  // task lists go through the feedback file so no toast lingers after the
-  // dialog closes; only failures surface an error toast.
-  if (variant === "success") return
-  if (variant === "info") {
-    if (!options) return
-    try {
-      writeLoopFeedback(options.storageDir, {
-        directory: options.directory,
-        message: result.message,
-        ts: Date.now(),
-      })
-    } catch (error) {
-      await logger("warn", "failed to write loop feedback", {
-        error: errorMessage(error),
-      })
-    }
-    return
-  }
-  try {
-    await client.tui.showToast({
-      throwOnError: true,
-      body: {
-        title: LOOP_FEEDBACK_TITLE,
-        message: result.message,
-        variant,
-        duration: toastDuration(result.message),
-      },
-    })
-  } catch (error) {
-    await logger("warn", "failed to show loop command result", {
-      error: errorMessage(error),
-    })
   }
 }
