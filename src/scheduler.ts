@@ -16,7 +16,7 @@ import type { LoopTask } from "./types.js"
 import type { LoopStoreInstance as LoopStore } from "./store.js"
 import type { CronParserInstance as CronParser } from "./cron-parser.js"
 import type { JitterInstance as Jitter } from "./jitter.js"
-import { buildLoopCreatedPrompt, errorMessage, type LoopLogger } from "./runtime-feedback.js"
+import { buildFixedExecutionPrompt, buildLoopCreatedPrompt, errorMessage, type LoopLogger } from "./runtime-feedback.js"
 import {
   buildAdaptiveExecutionPrompt,
   clampAdaptiveNextDueAt as clampAdaptivePolicyNextDueAt,
@@ -472,7 +472,7 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
                 minMs: inst.opts.adaptiveMinMs,
                 maxMs: inst.opts.adaptiveMaxMs,
               })
-            : task.prompt
+            : buildFixedExecutionPrompt(task)
         const directory = task.directory || ctx?.directory || process.cwd()
         const client = ctx?.client
 

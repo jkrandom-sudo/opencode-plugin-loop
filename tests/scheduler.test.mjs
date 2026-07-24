@@ -355,6 +355,33 @@ test("/loop resume --all works cross-session and rearms fixed", async () => {
   }
 })
 
+test("fireTask wraps fixed prompts with an explicit execution instruction", async () => {
+  const { sched, dir } = makeScheduler(async () => {})
+  try {
+    const result = await sched.handleUserCommand("5m 输出当前系统时间", dir, "s1")
+    const promptCalls = []
+    const client = {
+      session: {
+        async prompt(args) {
+          promptCalls.push(args)
+          return true
+        },
+      },
+    }
+
+    await sched.fireTask(result.task, { client, directory: dir })
+
+    assert.equal(promptCalls.length, 1)
+    const text = promptCalls[0].body.parts[0].text
+    assert.match(text, /scheduled execution of \/loop task/)
+    assert.match(text, new RegExp(result.task.id))
+    assert.match(text, /输出当前系统时间/)
+    assert.match(text, /Perform the task/)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
 test("fireTask failure uses structured logger without console output", async () => {
   const logCalls = []
   const consoleCalls = []
