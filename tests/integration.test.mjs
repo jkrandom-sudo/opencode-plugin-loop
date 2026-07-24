@@ -291,7 +291,7 @@ test("plugin loads legacy tasks.json, drops orphans, keeps session-bound ones", 
   }
 })
 
-test("TUI-safe /loop list uses toast and consumes the model-facing command", async () => {
+test("TUI-safe /loop list writes the feedback file and consumes the model-facing command", async () => {
   const dir = mkdtempSync(join(tmpdir(), "loop-int-"))
   const consoleCalls = []
   const originalConsole = {
@@ -348,11 +348,13 @@ test("TUI-safe /loop list uses toast and consumes the model-facing command", asy
     )
 
     assert.equal(consoleCalls.length, 0)
-    assert.equal(toastCalls.length, 1)
-    assert.equal(toastCalls[0].throwOnError, true)
-    assert.equal(toastCalls[0].body.title, "Loop · opencode-plugin-loop")
-    assert.equal(toastCalls[0].body.variant, "info")
-    assert.match(toastCalls[0].body.message, /loop task/i)
+    assert.equal(toastCalls.length, 0)
+    const feedback = JSON.parse(
+      readFileSync(join(dir, ".opencode/cache/loop/tui-feedback.json"), "utf8")
+    )
+    assert.equal(feedback.directory, dir)
+    assert.match(feedback.message, /loop task/i)
+    assert.ok(typeof feedback.ts === "number")
     assert.doesNotMatch(output.parts[0].text, /^list$/)
     assert.match(output.parts[0].text, /already handled/i)
     // The instance lock also logs ("loop instance lock acquired") — select
@@ -396,12 +398,19 @@ test("starting a loop stays silent on the TUI", async () => {
       experimental_workspace: { register: () => {} },
     })
 
+    const output = {
+      parts: [{ id: "p1", sessionID: "sA", messageID: "m1", type: "text", text: "5m check the build" }],
+    }
     await hooks["command.execute.before"](
       { command: "loop", arguments: "5m check the build", sessionID: "sA" },
-      { parts: [{ id: "p1", sessionID: "sA", messageID: "m1", type: "text", text: "5m check the build" }] }
+      output
     )
 
     assert.equal(toastCalls.length, 0)
+    assert.match(output.parts[0].text, /Job ID: [a-z0-9]+/i)
+    assert.match(output.parts[0].text, /every 5m/)
+    assert.match(output.parts[0].text, /same language/i)
+    assert.match(output.parts[0].text, /do not call tools/i)
   } finally {
     if (hooks) await hooks.dispose()
     rmSync(dir, { recursive: true })
@@ -473,7 +482,8 @@ test("command failure becomes an error toast instead of rejecting", async () => 
     assert.equal(toastCalls.length, 1)
     assert.equal(toastCalls[0].body.variant, "error")
     assert.match(toastCalls[0].body.message, /max tasks/i)
-    assert.match(output.parts[0].text, /already handled/i)
+    assert.match(output.parts[0].text, /failed/i)
+    assert.match(output.parts[0].text, /same language/i)
   } finally {
     if (hooks) await hooks.dispose()
     rmSync(dir, { recursive: true })
@@ -555,7 +565,7 @@ test("toast transport failure is recorded in structured logs", async () => {
     })
 
     await hooks["command.execute.before"](
-      { command: "loop", arguments: "list", sessionID: "sA" },
+      { command: "loop", arguments: "cancel", sessionID: "sA" },
       { parts: [] }
     )
 

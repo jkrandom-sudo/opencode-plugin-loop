@@ -16,7 +16,7 @@ import type { LoopTask } from "./types.js"
 import type { LoopStoreInstance as LoopStore } from "./store.js"
 import type { CronParserInstance as CronParser } from "./cron-parser.js"
 import type { JitterInstance as Jitter } from "./jitter.js"
-import { errorMessage, type LoopLogger } from "./runtime-feedback.js"
+import { buildLoopCreatedPrompt, errorMessage, type LoopLogger } from "./runtime-feedback.js"
 import {
   buildAdaptiveExecutionPrompt,
   clampAdaptiveNextDueAt as clampAdaptivePolicyNextDueAt,
@@ -260,6 +260,12 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
         })
         return {
           task,
+          modelPrompt: buildLoopCreatedPrompt({
+            prompt: fixed.prompt,
+            schedule: `every ${interval.display}`,
+            taskId: task.id,
+            once: task.once,
+          }),
           message: `🔁 Loop started: every ${interval.display}, prompt "${fixed.prompt.slice(0, 50)}${fixed.prompt.length > 50 ? "..." : ""}" [id=${task.id}] [s=${sessionID.slice(0, 8)}]${task.once ? " (runs once)" : ""}. Cancel: \`/loop cancel ${task.id}\``,
         }
       }

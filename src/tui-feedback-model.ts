@@ -114,10 +114,3 @@ export function isLoopFeedbackToast(event: unknown): event is {
     isVariant(event.properties.variant)
   )
 }
-
-export function isLoopTaskListToast(event: unknown): event is {
-  type: "tui.toast.show"
-  properties: LoopFeedbackInput & Record<string, unknown>
-} {
-  return isLoopFeedbackToast(event) && event.properties.variant === "info"
-}

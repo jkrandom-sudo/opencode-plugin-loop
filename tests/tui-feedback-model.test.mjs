@@ -7,7 +7,6 @@ import {
   createLoopFeedbackModel,
   extractTaskIds,
   isLoopFeedbackToast,
-  isLoopTaskListToast,
   parseLoopTaskList,
 } from "../dist/tui-feedback-model.js"
 
@@ -139,38 +138,4 @@ test("recognizes only plugin-owned Loop feedback toast events", () => {
   )
   assert.equal(isLoopFeedbackToast({ type: "other", properties: event.properties }), false)
   assert.equal(isLoopFeedbackToast(null), false)
-})
-
-test("recognizes only info-variant Loop toasts as task lists", () => {
-  const base = {
-    type: "tui.toast.show",
-    properties: {
-      title: LOOP_FEEDBACK_TITLE,
-      message: "📋 1 loop task(s):",
-      duration: 5000,
-    },
-  }
-
-  assert.equal(
-    isLoopTaskListToast({
-      ...base,
-      properties: { ...base.properties, variant: "info" },
-    }),
-    true,
-  )
-  assert.equal(
-    isLoopTaskListToast({
-      ...base,
-      properties: { ...base.properties, variant: "success" },
-    }),
-    false,
-  )
-  assert.equal(
-    isLoopTaskListToast({
-      ...base,
-      properties: { ...base.properties, variant: "error" },
-    }),
-    false,
-  )
-  assert.equal(isLoopTaskListToast(null), false)
 })
