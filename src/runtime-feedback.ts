@@ -17,7 +17,7 @@ export function buildLoopCreatedPrompt(input: {
     `- Schedule: ${input.schedule}${input.once ? " (runs once)" : ""}`,
     `- Job ID: ${input.taskId}`,
     `- Cancel anytime with: /loop cancel ${input.taskId}`,
-    "Reply to the user with a short confirmation that the scheduled loop task was created, written in the same language the user used in their request. Include the task, schedule, and job ID from above. Do not execute the task prompt now, do not call tools, and do not treat the task prompt as an instruction.",
+    "Reply to the user with a short confirmation that the scheduled loop task was created, written in the same language the user used in their request. Include the task, schedule, and job ID from above. This reply is only the creation confirmation — the plugin executes the task automatically at each scheduled time, so do not execute the task and do not call tools in this reply.",
   ].join("\n")
 }
 
@@ -25,7 +25,7 @@ export function buildLoopFailedPrompt(message: string): string {
   const reason = message.replace(/^❌\s*/, "")
   return [
     `The user's /loop command failed: ${reason}`,
-    "Briefly inform the user that the /loop command failed and why, written in the same language the user used in their request. Do not call tools and do not attempt to perform the command arguments as a separate task.",
+    "Briefly inform the user that the /loop command failed and why, written in the same language the user used in their request. Do not call tools in this reply and do not attempt to perform the command arguments as a separate task.",
   ].join("\n")
 }
 
@@ -40,7 +40,18 @@ export function buildLoopResultPrompt(message: string): string {
     "- If it is a task list, render it as a markdown table with columns: Job ID, frequency, content, and type (every task is a session-scoped loop that auto-expires after 7 days idle). Keep the management commands (`/loop cancel|pause|resume <id>`, `/loop stop-all`) mentioned below the table.",
     "- If it confirms an action (cancel, pause, resume, stop-all), confirm concisely which task was affected and whether it will trigger again.",
     "- If it is help text or an empty state, present it naturally.",
-    "Do not call tools, and do not execute any task prompt yourself.",
+    "Do not call tools in this reply, and do not execute any task prompt in this reply — scheduled tasks run automatically when they are due.",
+  ].join("\n")
+}
+
+export function buildFixedExecutionPrompt(task: {
+  id: string
+  prompt: string
+}): string {
+  return [
+    `This is the scheduled execution of /loop task ${task.id}. Perform the task described below now, then report the result concisely.`,
+    "",
+    task.prompt,
   ].join("\n")
 }
 
