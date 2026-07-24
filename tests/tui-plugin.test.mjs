@@ -11,6 +11,7 @@ function createFakeApi() {
   const toasts = []
   const logs = []
   const layers = []
+  const eventHandlers = new Map()
   let dialogEntry
 
   const dialog = {
@@ -53,6 +54,12 @@ function createFakeApi() {
       },
     },
     theme: { current: {} },
+    event: {
+      on(type, handler) {
+        eventHandlers.set(type, handler)
+        return () => eventHandlers.delete(type)
+      },
+    },
     keymap: {
       registerLayer(layer) {
         const record = { layer, active: true }
@@ -73,6 +80,9 @@ function createFakeApi() {
     },
     __view() {
       return dialogEntry?.view
+    },
+    __emit(type, event) {
+      eventHandlers.get(type)?.(event)
     },
     __toasts: toasts,
     __logs: logs,
@@ -137,6 +147,36 @@ test("opens the dialog when task list feedback arrives", async () => {
   emitLoop("📋 1 loop task(s):\n  [abc123] ▶ active • every 60s • work")
   assert.equal(api.ui.dialog.open, true)
   assert.equal(api.__view().variant, "info")
+})
+
+test("opens the dialog for legacy toast feedback from older servers", async () => {
+  const api = createFakeApi()
+  const { plugin } = createTestLoopTuiPlugin()
+  await plugin(api)
+
+  api.__emit("tui.toast.show", {
+    type: "tui.toast.show",
+    properties: {
+      title: "Loop · opencode-plugin-loop",
+      message: "📋 1 loop task(s):\n  [abc123] ▶ active • every 60s • work",
+      variant: "info",
+      duration: 5000,
+    },
+  })
+  assert.equal(api.ui.dialog.open, true)
+  assert.match(api.__view().message, /abc123/)
+
+  api.__view().onClose()
+  api.__emit("tui.toast.show", {
+    type: "tui.toast.show",
+    properties: {
+      title: "Loop · opencode-plugin-loop",
+      message: "🔁 Loop started [id=zzz999]",
+      variant: "success",
+      duration: 5000,
+    },
+  })
+  assert.equal(api.ui.dialog.open, false)
 })
 
 test("ignores stale feedback and feedback from other directories", async () => {
