@@ -114,3 +114,12 @@ export function isLoopFeedbackToast(event: unknown): event is {
     isVariant(event.properties.variant)
   )
 }
+
+// Legacy fallback: servers older than 0.6.0 deliver task lists via toast
+// instead of the feedback file, so the TUI still honors these events.
+export function isLoopTaskListToast(event: unknown): event is {
+  type: "tui.toast.show"
+  properties: LoopFeedbackInput & Record<string, unknown>
+} {
+  return isLoopFeedbackToast(event) && event.properties.variant === "info"
+}

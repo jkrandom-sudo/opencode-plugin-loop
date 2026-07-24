@@ -27,6 +27,7 @@ import {
 import {
   LOOP_COPY_TITLE,
   createLoopFeedbackModel,
+  isLoopTaskListToast,
   type LoopFeedbackInput,
 } from "./tui-feedback-model.js"
 
@@ -207,8 +208,17 @@ export function createLoopTuiPlugin(
       openFeedback({ message: payload.message, variant: "info" })
     })
 
+    // Legacy fallback: servers older than 0.6.0 deliver task lists via
+    // toast, not the feedback file. Newer servers never send these toasts,
+    // so both channels can be active without double-opening.
+    const unsubscribe = api.event.on("tui.toast.show", (event) => {
+      if (!isLoopTaskListToast(event)) return
+      openFeedback(event.properties)
+    })
+
     api.lifecycle.onDispose(() => {
       unwatch()
+      unsubscribe()
       close()
     })
   }
