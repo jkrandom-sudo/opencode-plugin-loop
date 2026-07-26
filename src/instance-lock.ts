@@ -42,6 +42,13 @@ export interface InstanceLockOptions {
 export interface InstanceLockInstance {
   instanceId: string
   isLeader(): boolean
+  /**
+   * Whether this instance's ticker may fire tasks. The lock only serializes
+   * instances inside ONE process (case-variant plugin paths); when the lock
+   * is held by a DIFFERENT process, that process fires its own tasks and we
+   * fire ours — so anything but "same-pid foreign leader" allows firing.
+   */
+  shouldFire(): boolean
   /** Begin heartbeat / takeover probing. Safe to call once. */
   start(): void
   /** Stop probing; release the lock if leader. */
@@ -66,6 +73,7 @@ export function InstanceLock(this: unknown, options: InstanceLockOptions): Insta
   const lockFile = join(lockDir, "lock.json")
 
   let leading = false
+  let ownerPid: number | null = null
   let timer: ReturnType<typeof setInterval> | null = null
 
   const writeLockFile = () => {
@@ -90,6 +98,7 @@ export function InstanceLock(this: unknown, options: InstanceLockOptions): Insta
     try {
       mkdirSync(lockDir)
       writeLockFile()
+      ownerPid = process.pid
       return true
     } catch {
       return false
@@ -103,9 +112,11 @@ export function InstanceLock(this: unknown, options: InstanceLockOptions): Insta
     // Lock held: am I the owner? (e.g. after a same-process reload)
     try {
       const owner = JSON.parse(readFileSync(lockFile, "utf-8")) as LockFile
+      ownerPid = owner.pid
       if (owner.instanceId === instanceId) return true
     } catch {
       // Unreadable lock file: fall through to staleness check
+      ownerPid = null
     }
     const mtime = readLockMtime()
     const stale = mtime === null || now() - mtime > staleMs
@@ -137,6 +148,7 @@ export function InstanceLock(this: unknown, options: InstanceLockOptions): Insta
         // deciding our heartbeat stopped (e.g. event-loop stall).
         try {
           const owner = JSON.parse(readFileSync(lockFile, "utf-8")) as LockFile
+          ownerPid = owner.pid
           if (owner.instanceId !== instanceId) {
             leading = false
             await logger("warn", "loop instance lock lost", { instanceId })
@@ -144,6 +156,7 @@ export function InstanceLock(this: unknown, options: InstanceLockOptions): Insta
           }
         } catch {
           leading = false
+          ownerPid = null
           await logger("warn", "loop instance lock lost (unreadable)", { instanceId })
           return
         }
@@ -164,6 +177,7 @@ export function InstanceLock(this: unknown, options: InstanceLockOptions): Insta
   const inst: InstanceLockInstance = {
     instanceId,
     isLeader: () => leading,
+    shouldFire: () => leading || ownerPid !== process.pid,
     start: () => {
       if (timer) return
       void tick()
@@ -185,6 +199,7 @@ export function InstanceLock(this: unknown, options: InstanceLockOptions): Insta
         }
         leading = false
       }
+      ownerPid = null
     },
   }
   return inst

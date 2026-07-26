@@ -66,16 +66,36 @@ interface SchedulerInstance {
 
 export type { SchedulerInstance }
 
-function extractJitterFlag(text: string): { prompt: string; jitterEnabled?: boolean } {
-  const tokens = text.trim().split(/\s+/)
-  const index = tokens.findIndex(
-    (token) => token === "--jitter=true" || token === "--jitter=false"
-  )
-  if (index < 0) return { prompt: text.trim() }
-  const [flag] = tokens.splice(index, 1)
-  return {
-    prompt: tokens.join(" ").trim(),
-    jitterEnabled: flag === "--jitter=true",
+/**
+ * Parse scheduling flags ONLY in the leading option-prefix region of `text`.
+ * Scanning stops at the first non-flag token or at a `--` terminator; the
+ * remainder is returned as the original substring (whitespace and newlines
+ * preserved), so prompt text that merely looks like a flag (`--once`,
+ * `--all`, `--jitter=*`) is never stripped from the prompt body.
+ */
+const PREFIX_FLAGS = new Set(["--once", "--all", "--jitter=true", "--jitter=false"])
+
+function parseFlagPrefix(text: string): {
+  once: boolean
+  jitterEnabled?: boolean
+  prompt: string
+} {
+  let rest = text
+  let once = false
+  let jitterEnabled: boolean | undefined
+  for (;;) {
+    const m = /^\s*(\S+)/.exec(rest)
+    if (!m) return { once, jitterEnabled, prompt: "" }
+    const token = m[1]
+    if (token === "--") {
+      return { once, jitterEnabled, prompt: rest.slice(m[0].length).trim() }
+    }
+    if (!PREFIX_FLAGS.has(token)) {
+      return { once, jitterEnabled, prompt: rest.trim() }
+    }
+    if (token === "--once") once = true
+    else if (token !== "--all") jitterEnabled = token === "--jitter=true"
+    rest = rest.slice(m[0].length)
   }
 }
 
@@ -104,7 +124,7 @@ const CC_FLAG_MAP: Record<string, string> = {
 }
 
 /** Flags that are meaningful in command position (not errors when leading). */
-const LEADING_OK = new Set(["--all", "--jitter=true", "--jitter=false", "--once"])
+const LEADING_OK = new Set(["--all", "--jitter=true", "--jitter=false", "--once", "--"])
 
 /** crude cron-expression detector (five-field crontab syntax) (B9). */
 function looksLikeCron(tokens: string[]): boolean {
@@ -123,11 +143,13 @@ Usage:
 Subcommands (session-scoped; add --all to cross sessions):
   list | status [--all]             Show loop tasks
   cancel <id> [--all]               Cancel one task
+  stop [<id>] [--all]               Cancel one task, or every task in scope when no id is given
   pause <id> [--all]                Pause one task
   resume <id> [--all]               Resume one task
   stop-all [--all]                  Cancel all tasks
 
-Flags:
+Flags (recognized only before the prompt begins; use -- to force the rest
+to be treated as prompt text verbatim):
   --all                             Operate across all sessions
   --jitter=true|false               Force Jitter on/off for a fixed task
   --once                            Fire once, then auto-cancel (fixed tasks only)
@@ -159,7 +181,6 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
       const trimmed = stripOuterQuotes(args.trim())
       const tokens = trimmed === "" ? [] : trimmed.split(/\s+/)
       const allFlag = tokens.includes("--all")
-      const onceFlag = tokens.includes("--once")
       let head = tokens[0]?.toLowerCase()
 
       // Claude Code-style leading flags map to subcommands (P-1).
@@ -181,8 +202,18 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
       }
 
       if (head === "cancel" || head === "stop") {
-        const id = tokens[1]
-        if (!id) return { message: "❌ Usage: /loop cancel <taskId> [--all]" }
+        const id = tokens[1] === "--all" ? tokens[2] : tokens[1]
+        if (!id) {
+          if (head === "cancel") return { message: "❌ Usage: /loop cancel <taskId> [--all]" }
+          // Bare `/loop stop`: cancel every task in scope (session unless --all),
+          // matching Claude Code's stop semantics for the current context.
+          if (allFlag) {
+            const n = await inst.opts.store.cancelAll()
+            return { message: `🛑 Cancelled ${n} task(s) across all sessions` }
+          }
+          const removed = await inst.opts.store.cancelBySession(inst.currentSessionID ?? "")
+          return { message: `🛑 Cancelled ${removed} task(s) in current session` }
+        }
         return inst.handleCancel(id, allFlag)
       }
       if (head === "list" || head === "status") {
@@ -236,24 +267,18 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
 
       const { interval, rest } = inst.opts.cron.extractInterval(trimmed)
       if (interval) {
-        const fixed = extractJitterFlag(rest)
-        // Strip command flags that leaked into the prompt area (B2).
-        fixed.prompt = fixed.prompt
-          .split(/\s+/)
-          .filter((t) => t !== "--all" && t !== "--once")
-          .join(" ")
-          .trim()
-        if (!fixed.prompt) {
+        const flags = parseFlagPrefix(rest)
+        if (!flags.prompt) {
           return {
             message: `❌ Missing prompt after interval "${tokens[0]}". Usage: /loop <interval> <prompt> — see \`/loop help\`.`,
           }
         }
         const task = await inst.opts.store.create({
-          prompt: fixed.prompt,
+          prompt: flags.prompt,
           mode: "fixed",
           intervalMs: interval.ms,
-          jitterEnabled: fixed.jitterEnabled ?? inst.opts.defaultJitterEnabled ?? true,
-          once: onceFlag || undefined,
+          jitterEnabled: flags.jitterEnabled ?? inst.opts.defaultJitterEnabled ?? true,
+          once: flags.once || undefined,
           directory,
           source: "user",
           sessionID,
@@ -261,12 +286,12 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
         return {
           task,
           modelPrompt: buildLoopCreatedPrompt({
-            prompt: fixed.prompt,
+            prompt: flags.prompt,
             schedule: `every ${interval.display}`,
             taskId: task.id,
             once: task.once,
           }),
-          message: `🔁 Loop started: every ${interval.display}, prompt "${fixed.prompt.slice(0, 50)}${fixed.prompt.length > 50 ? "..." : ""}" [id=${task.id}] [s=${sessionID.slice(0, 8)}]${task.once ? " (runs once)" : ""}. Cancel: \`/loop cancel ${task.id}\``,
+          message: `🔁 Loop started: every ${interval.display}, prompt "${flags.prompt.slice(0, 50)}${flags.prompt.length > 50 ? "..." : ""}" [id=${task.id}] [s=${sessionID.slice(0, 8)}]${task.once ? " (runs once)" : ""}. Cancel: \`/loop cancel ${task.id}\``,
         }
       }
 
@@ -284,19 +309,17 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
       }
 
       if (trimmed) {
-        // Command flags are scheduling metadata, not prompt text (B2).
-        const prompt = tokens
-          .filter((t) => t !== "--all" && t !== "--jitter=true" && t !== "--jitter=false" && t !== "--once")
-          .join(" ")
-          .trim()
-        if (!prompt) {
+        // Flags are recognized only in the leading option prefix; everything
+        // after the first non-flag token (or `--`) is the prompt, verbatim.
+        const flags = parseFlagPrefix(trimmed)
+        if (!flags.prompt) {
           return { message: "❌ Empty loop command — see `/loop help`." }
         }
-        if (onceFlag) {
+        if (flags.once) {
           return { message: "❌ --once is only supported for fixed-interval tasks, e.g. `/loop 30s --once <prompt>`." }
         }
         const task = await inst.opts.store.create({
-          prompt,
+          prompt: flags.prompt,
           mode: "adaptive",
           adaptiveMinMs: inst.opts.adaptiveMinMs,
           adaptiveMaxMs: inst.opts.adaptiveMaxMs,
@@ -312,7 +335,7 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
             minMs: inst.opts.adaptiveMinMs,
             maxMs: inst.opts.adaptiveMaxMs,
           }),
-          message: `🔁 Loop started (adaptive ${inst.opts.adaptiveMinMs / 1000}s–${inst.opts.adaptiveMaxMs / 1000}s): "${prompt.slice(0, 50)}${prompt.length > 50 ? "..." : ""}" [id=${task.id}] [s=${sessionID.slice(0, 8)}]. Cancel: \`/loop cancel ${task.id}\``,
+          message: `🔁 Loop started (adaptive ${inst.opts.adaptiveMinMs / 1000}s–${inst.opts.adaptiveMaxMs / 1000}s): "${flags.prompt.slice(0, 50)}${flags.prompt.length > 50 ? "..." : ""}" [id=${task.id}] [s=${sessionID.slice(0, 8)}]. Cancel: \`/loop cancel ${task.id}\``,
         }
       }
 

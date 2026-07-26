@@ -24,13 +24,21 @@ export interface LoopStoreOptions {
   taskTtlMs?: number
   logger?: LoopLogger
   /**
-   * Ephemeral lifecycle (default true): tasks written by a different process are
-   * dropped on load. Process identity is tracked via pid + process start time so
-   * same-process plugin reloads keep their tasks.
+   * Ephemeral lifecycle (default true): tasks die with their owning process.
+   * Each task records ownerPid + ownerStartedAt; on load, tasks whose owner
+   * process is confirmed dead are dropped, while tasks owned by other LIVE
+   * processes are kept (visible/manageable via --all). Tasks without owner
+   * fields (written before owner leases existed) fall back to the file-writer
+   * identity rule (pid + start time).
    */
   ephemeralTasks?: boolean
   /** Injectable process identity for tests; defaults to the current process. */
   processIdentity?: ProcessIdentity
+  /**
+   * Liveness probe for task-owner processes (default: signal 0; EPERM counts
+   * as alive). Injectable so tests can simulate concurrent processes.
+   */
+  processAlive?: (pid: number) => boolean
 }
 
 export interface ProcessIdentity {
@@ -92,6 +100,24 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
     pid: process.pid,
     startedAt: Date.now() - process.uptime() * 1000,
   }
+  let processAlive: (pid: number) => boolean = (pid) => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch (err) {
+      // EPERM: the process exists but is owned by another user — still alive.
+      return (err as NodeJS.ErrnoException)?.code === "EPERM"
+    }
+  }
+  /** Probe wrapper: any probe failure keeps the task (never delete data we
+   *  cannot verify). Only an explicit "not alive" verdict drops a task. */
+  const ownerAlive = (pid: number): boolean => {
+    try {
+      return processAlive(pid)
+    } catch {
+      return true
+    }
+  }
   /** Same-process reload keeps tasks; a different pid — or a recycled pid whose
    *  recorded start time diverges — means the writer was a previous process. */
   const PID_START_TOLERANCE_MS = 30_000
@@ -99,6 +125,12 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
     state.pid === identity.pid &&
     state.startedAt !== undefined &&
     Math.abs(state.startedAt - identity.startedAt) <= PID_START_TOLERANCE_MS
+  /** Per-task owner lease: a task survives load when its owner is this process
+   *  or a verifiably live foreign process; dead owners lose their tasks. */
+  const isOwnTask = (t: LoopTask): boolean =>
+    t.ownerPid === identity.pid &&
+    t.ownerStartedAt !== undefined &&
+    Math.abs(t.ownerStartedAt - identity.startedAt) <= PID_START_TOLERANCE_MS
   // Merge-write bookkeeping. Multiple plugin instances can share one
   // tasks.json (case-variant plugin paths, per-command `opencode run`
   // instances). `tombstones` are ids this instance cancelled — they must never
@@ -133,37 +165,52 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
         if (parsed.version !== 1) {
           throw new Error(`Unsupported state version: ${parsed.version}`)
         }
-        if (ephemeralTasks && !isSameProcess(parsed)) {
-          const dropped = parsed.tasks.length
-          // Tombstone every id so merge-write cannot resurrect them.
-          for (const t of parsed.tasks) tombstones.add(t.id)
-          inst.state = { version: 1, tasks: [] }
-          await inst.persist()
+        let candidates = parsed.tasks
+        if (ephemeralTasks) {
+          candidates = parsed.tasks.filter((t) => {
+            if (t.ownerPid === undefined) {
+              // Legacy tasks written before owner leases existed: fall back to
+              // the file-writer rule (drop unless written by this process).
+              return isSameProcess(parsed)
+            }
+            return isOwnTask(t) || ownerAlive(t.ownerPid)
+          })
+          const dropped = parsed.tasks.length - candidates.length
           if (dropped > 0) {
-            await logger("info", `ephemeral cleanup: dropped ${dropped} task(s) from previous process`, {
+            for (const t of parsed.tasks) {
+              if (!candidates.includes(t)) tombstones.add(t.id)
+            }
+            await logger("info", `ephemeral cleanup: dropped ${dropped} task(s) from dead process(es)`, {
               count: dropped,
               previousPid: parsed.pid,
             })
           }
-          return
         }
         const cutoff = Date.now() - inst.taskTtlMs
         // B4: expire by last ACTIVITY, not creation — a task that keeps
         // firing must not be dropped just because it was created 7 days ago.
-        const filtered = parsed.tasks.filter((t) => Math.max(t.createdAt, t.lastFiredAt ?? 0) > cutoff && !!t.sessionID && !tombstones.has(t.id))
+        const filtered = candidates.filter((t) => Math.max(t.createdAt, t.lastFiredAt ?? 0) > cutoff && !!t.sessionID && !tombstones.has(t.id))
         // Tombstone load-time deletions (expired/orphan) so merge-write
         // cannot resurrect them on the persist below.
-        for (const t of parsed.tasks) {
+        for (const t of candidates) {
           if (!filtered.includes(t)) tombstones.add(t.id)
         }
+        const ttlDropped = candidates.length - filtered.length
         inst.state = { version: 1, tasks: filtered }
         dirtyIds.clear()
-        if (inst.state.tasks.length !== parsed.tasks.length) {
-          await inst.persist()
-          const dropped = parsed.tasks.length - inst.state.tasks.length
-          await logger("info", `cleaned ${dropped} task(s) on load (orphan/expired)`, {
-            count: dropped,
+        if (ttlDropped > 0) {
+          await logger("info", `cleaned ${ttlDropped} task(s) on load (orphan/expired)`, {
+            count: ttlDropped,
           })
+        }
+        // Adopt identity / persist deletions whenever the on-disk state
+        // diverges from what we keep (including the writer identity itself).
+        if (
+          inst.state.tasks.length !== parsed.tasks.length ||
+          parsed.pid !== identity.pid ||
+          parsed.startedAt !== identity.startedAt
+        ) {
+          await inst.persist()
         }
       } catch (err) {
         const backup = `${inst.filePath}.corrupted.${Date.now()}`
@@ -245,6 +292,8 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
         // Only present on one-shot tasks — keeps persisted JSON stable for
         // tasks that never use the field.
         ...(input.once ? { once: true as const } : {}),
+        ownerPid: identity.pid,
+        ownerStartedAt: identity.startedAt,
       }
       inst.state.tasks.push(task)
       dirtyIds.add(task.id)
@@ -382,6 +431,7 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
     logger = options.logger ?? logger
     ephemeralTasks = options.ephemeralTasks ?? true
     identity = options.processIdentity ?? identity
+    processAlive = options.processAlive ?? processAlive
     inst.filePath = join(options.storageDir, "tasks.json")
     inst.maxTasks = options.maxTasks ?? 50
     inst.taskTtlMs = options.taskTtlMs ?? 7 * 24 * 60 * 60 * 1000

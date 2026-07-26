@@ -110,20 +110,23 @@ export const LoopPlugin: Plugin = async (ctx) => {
 
   // Internal ticker: every 5s, fire any due tasks whose sessionID matches the active session.
   // This replaces the old session.idle-event-driven firing and runs even when no user input.
-  // Only the lock leader fires: other instances sharing this tasks.json (B1)
-  // keep their tickers idle but may take over if the leader goes stale.
+  // Firing requires lock.shouldFire(): the lock serializes same-process plugin
+  // instances only — when the lock is held by ANOTHER process, that process
+  // fires its own tasks and we fire ours (owner-pid filter below).
   const lock = InstanceLock({ storageDir, logger })
   const lockEnabled = config.instanceLock
   if (lockEnabled) lock.start()
   const inflight = new Set<string>()
   const ticker = setInterval(async () => {
     try {
-      if (lockEnabled && !lock.isLeader()) return
+      if (lockEnabled && !lock.shouldFire()) return
       if (!activeSessionID) return
       const due = await scheduler.getDueTasksForSession(activeSessionID)
       if (due.length === 0) return
       for (const task of due) {
         if (task.sessionID !== activeSessionID) continue
+        // Tasks created by another live process are fired by that process.
+        if (task.ownerPid !== undefined && task.ownerPid !== process.pid) continue
         if (inflight.has(task.id)) continue
         inflight.add(task.id)
         try {

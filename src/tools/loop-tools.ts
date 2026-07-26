@@ -15,6 +15,7 @@ import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool"
 import { z } from "zod"
 import type { LoopStoreInstance as LoopStore } from "../store.js"
 import type { SchedulerInstance as Scheduler } from "../scheduler.js"
+import { validateFixedInterval } from "../cron-parser.js"
 
 export async function buildLoopTools(
   store: LoopStore,
@@ -28,7 +29,7 @@ export async function buildLoopTools(
         action: z.enum(["create", "list", "cancel", "reschedule", "set_fixed", "pause", "resume"]),
         taskId: z.string().optional().describe("Required for cancel/reschedule/set_fixed/pause/resume"),
         prompt: z.string().optional().describe("Required for create; the prompt to re-inject each cycle"),
-        intervalMs: z.number().finite().optional().describe("Fixed interval in milliseconds (for create+fixed mode or set_fixed)"),
+        intervalMs: z.number().finite().min(1000).optional().describe("Fixed interval in milliseconds (min 1000; for create+fixed mode or set_fixed)"),
         delayMs: z.number().finite().optional().describe("Relative delay in milliseconds (preferred for Adaptive reschedule)"),
         nextDueAtMs: z.number().finite().optional().describe("Absolute epoch ms for reschedule; cannot be combined with delayMs"),
         jitterEnabled: z.boolean().optional().describe("Fixed-task Jitter policy for create or set_fixed"),
@@ -141,7 +142,20 @@ export async function buildLoopTools(
             const sid = currentSID
             if (!sid)
               return JSON.stringify({ ok: false, error: "No sessionID in context" })
-            const mode = args.mode ?? (args.intervalMs ? "fixed" : "adaptive")
+            const mode = args.mode ?? (args.intervalMs !== undefined ? "fixed" : "adaptive")
+            if (mode === "fixed") {
+              // Same rule as the slash parser and set_fixed: fixed requires a
+              // valid interval of at least 1000ms (rejects 0/undefined/NaN).
+              const v = validateFixedInterval(args.intervalMs)
+              if (!v.ok) {
+                return JSON.stringify({ ok: false, error: `fixed mode requires ${v.error}` })
+              }
+            } else if (args.intervalMs !== undefined) {
+              return JSON.stringify({
+                ok: false,
+                error: `intervalMs is only valid for fixed tasks (mode=${mode})`,
+              })
+            }
             if (args.once && mode !== "fixed") {
               return JSON.stringify({ ok: false, error: "once is supported only for fixed tasks" })
             }
@@ -153,7 +167,7 @@ export async function buildLoopTools(
               source: "user",
               sessionID: sid,
             }
-            if (mode === "fixed" && args.intervalMs) {
+            if (mode === "fixed") {
               input.intervalMs = args.intervalMs
               input.jitterEnabled =
                 args.jitterEnabled ?? scheduler.opts.defaultJitterEnabled ?? true
@@ -239,11 +253,9 @@ export async function buildLoopTools(
           case "set_fixed": {
             if (!args.taskId)
               return JSON.stringify({ ok: false, error: "taskId required" })
-            if (!Number.isFinite(args.intervalMs) || (args.intervalMs ?? 0) < 1_000) {
-              return JSON.stringify({
-                ok: false,
-                error: "intervalMs must be a finite number of at least 1000ms",
-              })
+            const v = validateFixedInterval(args.intervalMs)
+            if (!v.ok) {
+              return JSON.stringify({ ok: false, error: v.error })
             }
             const t = store.get(args.taskId)
             if (!t) return JSON.stringify({ ok: false, error: `No task ${args.taskId}` })

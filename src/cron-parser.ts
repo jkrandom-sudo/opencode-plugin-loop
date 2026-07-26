@@ -25,6 +25,22 @@ const UNIT_TO_MS: Record<string, number> = {
 }
 const MIN_INTERVAL_MS = 1_000
 
+/**
+ * Single validator shared by the slash parser, the LLM tool `create`, and
+ * `set_fixed` — all entries must accept/reject the same fixed intervals.
+ */
+export function validateFixedInterval(
+  ms: unknown
+): { ok: true; ms: number } | { ok: false; error: string } {
+  if (typeof ms !== "number" || !Number.isFinite(ms)) {
+    return { ok: false, error: "intervalMs must be a finite number" }
+  }
+  if (ms < MIN_INTERVAL_MS) {
+    return { ok: false, error: `intervalMs must be at least ${MIN_INTERVAL_MS}ms` }
+  }
+  return { ok: true, ms }
+}
+
 export interface CronParserInstance {
   parse(input: string): ParsedInterval | null
   extractInterval(text: string): { interval: ParsedInterval | null; rest: string }
@@ -62,17 +78,19 @@ export function CronParser(this: unknown): CronParserInstance {
       }
     },
 
-    /** Try to extract an interval from a user command like "5m check deploy" */
+    /** Try to extract an interval from a user command like "5m check deploy".
+     * `rest` is the ORIGINAL substring after the interval token (not a token
+     * re-join), so prompt whitespace and newlines are preserved verbatim. */
     extractInterval(text: string) {
-      const tokens = text.trim().split(/\s+/)
-      if (tokens.length === 0) return { interval: null, rest: text }
-
-      const first = tokens[0]
+      const trimmed = text.trim()
+      if (!trimmed) return { interval: null, rest: text }
+      const firstMatch = /^\S+/.exec(trimmed)
+      const first = firstMatch?.[0] ?? ""
       const parsed = inst.parse(first)
       if (parsed) {
         return {
           interval: parsed,
-          rest: tokens.slice(1).join(" "),
+          rest: trimmed.slice(first.length).replace(/^\s+/, ""),
         }
       }
       return { interval: null, rest: text }

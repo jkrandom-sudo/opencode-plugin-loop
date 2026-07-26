@@ -635,3 +635,66 @@ test("ephemeral lifecycle: foreign-pid tasks.json dropped by default, kept with 
     rmSync(dir, { recursive: true })
   }
 })
+
+// --- LOOP-003: the LLM tool entry enforces the same fixed-interval rules as the slash parser ---
+
+test("loop_schedule create: fixed interval validation matches the slash parser", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-int-"))
+  try {
+    const mockClient = { tui: { appendPrompt: async () => true } }
+    const hooks = await pluginModule.LoopPlugin({
+      client: mockClient,
+      project: { id: "test" },
+      directory: dir,
+      worktree: dir,
+      $: {},
+      serverUrl: new URL("http://localhost:3000"),
+      experimental_workspace: { register: () => {} },
+    })
+    const tool = hooks.tool.loop_schedule
+    const ctx = {
+      sessionID: "s1",
+      messageID: "m1",
+      agent: "build",
+      directory: dir,
+      worktree: dir,
+      abort: new AbortController().signal,
+      metadata: () => {},
+      ask: async () => {},
+    }
+    // Schema errors throw; business-layer errors return ok:false. Both are rejections.
+    const attempt = async (args) => {
+      try {
+        return JSON.parse(await tool.execute(args, ctx))
+      } catch (e) {
+        return { ok: false, error: String(e) }
+      }
+    }
+
+    for (const bad of [0, 999, -5, Number.NaN]) {
+      const r = await attempt({ action: "create", mode: "fixed", intervalMs: bad, prompt: "x" })
+      assert.equal(r.ok, false, `intervalMs=${bad} rejected`)
+    }
+    const missing = await attempt({ action: "create", mode: "fixed", prompt: "x" })
+    assert.equal(missing.ok, false, "fixed without intervalMs rejected")
+
+    const adaptiveWithInterval = await attempt({ action: "create", mode: "adaptive", intervalMs: 60_000, prompt: "x" })
+    assert.equal(adaptiveWithInterval.ok, false, "adaptive carrying intervalMs rejected")
+
+    const good = await attempt({ action: "create", mode: "fixed", intervalMs: 1000, prompt: "x" })
+    assert.equal(good.ok, true, "1000ms accepted")
+    assert.equal(good.task.intervalMs, 1000)
+
+    // set_fixed uses the same validator.
+    const adaptive = JSON.parse(await tool.execute({ action: "create", prompt: "adapt me" }, ctx))
+    assert.equal(adaptive.ok, true)
+    const badConvert = await attempt({ action: "set_fixed", taskId: adaptive.task.id, intervalMs: 0 })
+    assert.equal(badConvert.ok, false, "set_fixed 0ms rejected")
+    const goodConvert = await attempt({ action: "set_fixed", taskId: adaptive.task.id, intervalMs: 5_000 })
+    assert.equal(goodConvert.ok, true, "set_fixed 5000ms accepted")
+
+    await hooks.dispose()
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
