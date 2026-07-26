@@ -181,7 +181,7 @@ test("explicit fixed commands use the programmatic jitter default", async () => 
   }
 })
 
-test("fixed command jitter flags override defaults and are removed from the prompt", async () => {
+test("fixed command jitter flags override defaults only in the option prefix", async () => {
   const { sched, dir } = makeScheduler(undefined, undefined, {
     defaultJitterEnabled: false,
   })
@@ -191,7 +191,8 @@ test("fixed command jitter flags override defaults and are removed from the prom
       "/tmp",
       "s1"
     )
-    const disabled = await sched.handleUserCommand(
+    // A flag AFTER the prompt starts is prompt text, not an option (LOOP-001).
+    const verbatim = await sched.handleUserCommand(
       "2m check deploy --jitter=false",
       "/tmp",
       "s1"
@@ -204,8 +205,8 @@ test("fixed command jitter flags override defaults and are removed from the prom
 
     assert.equal(enabled.task.jitterEnabled, true)
     assert.equal(enabled.task.prompt, "check version")
-    assert.equal(disabled.task.jitterEnabled, false)
-    assert.equal(disabled.task.prompt, "check deploy")
+    assert.equal(verbatim.task.jitterEnabled, false, "default applies; mid-prompt flag untouched")
+    assert.equal(verbatim.task.prompt, "check deploy --jitter=false")
     assert.equal(invalid.task.jitterEnabled, false)
     assert.equal(invalid.task.prompt, "--jitter=maybe keep this text")
   } finally {
@@ -634,6 +635,119 @@ test("list marks one-shot tasks", async () => {
     await sched.handleUserCommand("30s --once say hi", "/tmp", "s1")
     const r = await sched.handleUserCommand("list", "/tmp", "s1")
     assert.match(r.message, /once/)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+// --- LOOP-001: prompt fidelity (flags only parsed in the option prefix) ---
+
+test("LOOP-001: flag-like text inside the prompt is preserved verbatim", async () => {
+  const { sched, store, dir } = makeScheduler()
+  try {
+    const marker = '中文 空格 "双引号" \'单引号\' `反引号` --once --all $HOME'
+    const r = await sched.handleUserCommand(`1m --jitter=false 把 marker 原样写入：${marker}`, "/tmp", "s1")
+    assert.equal(r.task.prompt, `把 marker 原样写入：${marker}`)
+    assert.equal(store.get(r.task.id).prompt, `把 marker 原样写入：${marker}`, "persisted verbatim")
+    assert.equal(r.task.jitterEnabled, false, "prefix flag still parsed")
+    assert.equal(r.task.once, undefined, "--once in the body does not make the task one-shot")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("LOOP-001: prefix --once applies; body --once does not", async () => {
+  const { sched, dir } = makeScheduler()
+  try {
+    const oneShot = await sched.handleUserCommand("30s --once remind --once me", "/tmp", "s1")
+    assert.equal(oneShot.task.once, true)
+    assert.equal(oneShot.task.prompt, "remind --once me")
+    const recurring = await sched.handleUserCommand("30s remind --once me", "/tmp", "s1")
+    assert.equal(recurring.task.once, undefined)
+    assert.equal(recurring.task.prompt, "remind --once me")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("LOOP-001: -- terminator forces the rest to be prompt text", async () => {
+  const { sched, dir } = makeScheduler()
+  try {
+    const fixed = await sched.handleUserCommand("1m --once -- run tests --jitter=true --all", "/tmp", "s1")
+    assert.equal(fixed.task.once, true)
+    assert.equal(fixed.task.prompt, "run tests --jitter=true --all")
+    assert.equal(fixed.task.jitterEnabled, true, "default jitter; body flag not parsed")
+    const adaptive = await sched.handleUserCommand("-- check --once things", "/tmp", "s1")
+    assert.equal(adaptive.task.mode, "adaptive")
+    assert.equal(adaptive.task.prompt, "check --once things")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("LOOP-001: prompt whitespace and newlines are preserved", async () => {
+  const { sched, dir } = makeScheduler()
+  try {
+    const body = "line one\nline  two   spaced"
+    const r = await sched.handleUserCommand(`1m ${body}`, "/tmp", "s1")
+    assert.equal(r.task.prompt, body)
+    const a = await sched.handleUserCommand(`keep  double   spaces\nand newline`, "/tmp", "s1")
+    assert.equal(a.task.prompt, "keep  double   spaces\nand newline")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("LOOP-001: duplicate prefix flags are idempotent; last jitter wins", async () => {
+  const { sched, dir } = makeScheduler()
+  try {
+    const r = await sched.handleUserCommand("1m --once --once --jitter=true --jitter=false go", "/tmp", "s1")
+    assert.equal(r.task.once, true)
+    assert.equal(r.task.jitterEnabled, false)
+    assert.equal(r.task.prompt, "go")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+// --- /loop stop without an id cancels every task in scope ---
+
+test("/loop stop without an id cancels all tasks in the current session", async () => {
+  const { sched, store, dir } = makeScheduler()
+  try {
+    await sched.handleUserCommand("1m task A1", "/tmp", "sA")
+    await sched.handleUserCommand("1m task A2", "/tmp", "sA")
+    await sched.handleUserCommand("1m task B1", "/tmp", "sB")
+    const r = await sched.handleUserCommand("stop", "/tmp", "sA")
+    assert.match(r.message, /Cancelled 2 task\(s\) in current session/)
+    assert.equal(store.list().length, 1, "session B untouched")
+    assert.equal(store.list()[0].prompt, "task B1")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("/loop stop <id> still cancels a single task", async () => {
+  const { sched, store, dir } = makeScheduler()
+  try {
+    const a = await sched.handleUserCommand("1m task A1", "/tmp", "sA")
+    await sched.handleUserCommand("1m task A2", "/tmp", "sA")
+    const r = await sched.handleUserCommand(`stop ${a.task.id}`, "/tmp", "sA")
+    assert.match(r.message, new RegExp(`Cancelled ${a.task.id}`))
+    assert.equal(store.list().length, 1)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("/loop stop --all without an id cancels across sessions", async () => {
+  const { sched, store, dir } = makeScheduler()
+  try {
+    await sched.handleUserCommand("1m task A1", "/tmp", "sA")
+    await sched.handleUserCommand("1m task B1", "/tmp", "sB")
+    const r = await sched.handleUserCommand("stop --all", "/tmp", "sA")
+    assert.match(r.message, /Cancelled 2 task\(s\) across all sessions/)
+    assert.equal(store.list().length, 0)
   } finally {
     rmSync(dir, { recursive: true })
   }

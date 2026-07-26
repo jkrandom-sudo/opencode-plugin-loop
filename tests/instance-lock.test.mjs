@@ -158,3 +158,43 @@ test("crashed leader (no stop) leaves a lock that is eventually taken over", asy
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test("shouldFire: leader fires; same-process follower does not", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-lock-"))
+  try {
+    const a = makeLock(dir, "aaa")
+    const b = makeLock(dir, "bbb")
+    a.start()
+    b.start()
+    await tick(60)
+    assert.equal(a.isLeader(), true)
+    assert.equal(a.shouldFire(), true, "leader fires")
+    assert.equal(b.isLeader(), false)
+    assert.equal(b.shouldFire(), false, "same-process follower stays silent")
+    a.stop()
+    b.stop()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("shouldFire: a lock held by ANOTHER process does not block this one", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-lock-"))
+  try {
+    // Foreign process holds a fresh lock.
+    mkdirSync(join(dir, "loop.lock"), { recursive: true })
+    writeFileSync(
+      join(dir, "loop.lock", "lock.json"),
+      JSON.stringify({ instanceId: "foreign", pid: 999_999, hostname: "x", startedAt: Date.now() }),
+      "utf-8"
+    )
+    const b = makeLock(dir, "bbb")
+    b.start()
+    await tick(60)
+    assert.equal(b.isLeader(), false, "foreign lock is fresh — no takeover")
+    assert.equal(b.shouldFire(), true, "foreign process fires its own tasks; we fire ours")
+    b.stop()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

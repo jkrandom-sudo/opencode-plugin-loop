@@ -509,6 +509,7 @@ test("ephemeral: tasks from a previous process are dropped on load", async () =>
     const s2 = new LoopStore({
       storageDir: dir,
       processIdentity: { pid: 2222, startedAt: Date.now() },
+      processAlive: () => false,
       logger: async (level, message, extra) => logCalls.push({ level, message, extra }),
     })
     await s2.load()
@@ -596,6 +597,7 @@ test("ephemeral: recycled pid with divergent startedAt is treated as a new proce
     const s2 = new LoopStore({
       storageDir: dir,
       processIdentity: { pid: 3333, startedAt: now },
+      processAlive: () => false,
     })
     await s2.load()
     assert.equal(s2.list().length, 0)
@@ -775,6 +777,104 @@ test("TTL uses last activity: old-but-active tasks survive (B4)", async () => {
     const store = new LoopStore({ storageDir: dir, taskTtlMs: 7 * 86_400_000 })
     await store.load()
     assert.deepEqual(store.list().map((t) => t.id), ["active-old"])
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+// --- LOOP-002: per-task owner leases replace whole-file writer identity ---
+
+test("ephemeral: tasks owned by a LIVE foreign process are kept on load", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-test-"))
+  try {
+    const a = new LoopStore({
+      storageDir: dir,
+      processIdentity: { pid: 1111, startedAt: Date.now() - 10_000 },
+    })
+    await a.load()
+    const t = await a.create({ prompt: "A's task", mode: "fixed", intervalMs: 60_000, directory: "/tmp", sessionID: "sA" })
+    assert.equal(t.ownerPid, 1111)
+
+    // Process B loads while A is still alive: A's tasks must survive (LOOP-002).
+    const b = new LoopStore({
+      storageDir: dir,
+      processIdentity: { pid: 2222, startedAt: Date.now() },
+      processAlive: (pid) => pid === 1111,
+    })
+    await b.load()
+    assert.equal(b.list().length, 1, "live foreign task kept")
+    assert.equal(b.list()[0].id, t.id)
+
+    // B can still manage A's task explicitly (cross-instance cancel).
+    const removed = await b.cancel(t.id)
+    assert.ok(removed)
+    assert.equal(b.list().length, 0)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("ephemeral: dead owner's tasks dropped, live foreign tasks kept, own tasks kept", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-test-"))
+  try {
+    const dead = new LoopStore({
+      storageDir: dir,
+      processIdentity: { pid: 1111, startedAt: Date.now() - 20_000 },
+    })
+    await dead.load()
+    await dead.create({ prompt: "dead", mode: "fixed", intervalMs: 60_000, directory: "/tmp", sessionID: "s1" })
+
+    const live = new LoopStore({
+      storageDir: dir,
+      processIdentity: { pid: 2222, startedAt: Date.now() - 10_000 },
+      processAlive: () => true,
+    })
+    await live.load()
+    await live.create({ prompt: "live", mode: "fixed", intervalMs: 60_000, directory: "/tmp", sessionID: "s2" })
+
+    const me = new LoopStore({
+      storageDir: dir,
+      processIdentity: { pid: 3333, startedAt: Date.now() },
+      processAlive: (pid) => pid === 2222,
+    })
+    await me.load()
+    const prompts = me.list().map((t) => t.prompt).sort()
+    assert.deepEqual(prompts, ["live"], "only the dead owner's task is gone")
+    await me.create({ prompt: "mine", mode: "fixed", intervalMs: 60_000, directory: "/tmp", sessionID: "s3" })
+
+    // A fourth load still sees live-foreign + own tasks.
+    const again = new LoopStore({
+      storageDir: dir,
+      processIdentity: { pid: 3333, startedAt: Date.now() },
+      processAlive: (pid) => pid === 2222,
+    })
+    await again.load()
+    assert.equal(again.list().length, 2)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("ephemeral: probe errors keep foreign tasks (conservative)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-test-"))
+  try {
+    const a = new LoopStore({
+      storageDir: dir,
+      processIdentity: { pid: 1111, startedAt: Date.now() - 10_000 },
+    })
+    await a.load()
+    await a.create({ prompt: "foreign", mode: "fixed", intervalMs: 60_000, directory: "/tmp", sessionID: "sA" })
+
+    const b = new LoopStore({
+      storageDir: dir,
+      processIdentity: { pid: 2222, startedAt: Date.now() },
+      processAlive: () => {
+        throw new Error("probe unavailable")
+      },
+    })
+    // A failing probe must not crash load and must not delete data it cannot verify.
+    await b.load()
+    assert.equal(b.list().length, 1, "unverifiable foreign task kept")
   } finally {
     rmSync(dir, { recursive: true })
   }

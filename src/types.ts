@@ -34,6 +34,11 @@ export interface LoopTask {
   paused: boolean
   /** One-shot task: auto-cancelled after the first successful fire (fixed mode only). */
   once?: boolean
+  /** Process that created (and fires) this task. Used to distinguish live
+   *  foreign tasks from dead-process leftovers on load. */
+  ownerPid?: number
+  /** Owner process start time (epoch ms), guards against pid reuse. */
+  ownerStartedAt?: number
 }
 
 export interface LoopConfig {
@@ -55,15 +60,18 @@ export interface LoopConfig {
   defaultJitterEnabled?: boolean
   /**
    * Ephemeral lifecycle (default true, matching Claude Code's /loop): tasks die
-   * with the opencode process and are dropped on the next load. Set to false to
-   * keep the legacy behavior of persisting tasks across process restarts.
+   * with the opencode process that created them. Each task records its owner
+   * process; on load, tasks whose owner is confirmed dead are dropped, while
+   * tasks owned by other LIVE processes are kept (visible via --all). Set to
+   * false to keep tasks across process restarts.
    */
   ephemeralTasks?: boolean
   /**
-   * Single-leader instance lock (default true): when several plugin instances
-   * share one tasks.json (case-variant plugin paths, per-command `opencode
-   * run` instances), only the leader's ticker fires tasks. Set to false to
-   * disable coordination (not recommended).
+   * Instance coordination (default true): serializes plugin instances inside
+   * one process (case-variant plugin paths, per-command `opencode run`
+   * instances) so a task never fires twice; a lock held by a different
+   * process does not block this process from firing its own tasks. Set to
+   * false to disable coordination (not recommended).
    */
   instanceLock?: boolean
 }
