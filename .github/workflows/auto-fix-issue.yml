@@ -55,6 +55,8 @@ jobs:
           # MSWEA_CONFIGURED is the actual bypass flag, MSWEA_MODEL_NAME sets the model
           MSWEA_CONFIGURED: "true"
           MSWEA_MODEL_NAME: openai/k3-256k
+          # litellm has no pricing entry for this passthrough model; don't crash on cost calc
+          MSWEA_COST_TRACKING: ignore_errors
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ISSUE_NUMBER=${{ github.event.issue.number }}
