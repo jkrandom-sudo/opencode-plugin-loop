@@ -24,6 +24,7 @@
  */
 
 import type { Plugin, Hooks, PluginModule } from "@opencode-ai/plugin"
+import type { Part } from "@opencode-ai/sdk"
 import { LoopStore } from "./store.js"
 import { InstanceLock } from "./instance-lock.js"
 import { Scheduler } from "./scheduler.js"
@@ -140,6 +141,34 @@ export const LoopPlugin: Plugin = async (ctx) => {
     }
   }, config.tickerIntervalMs)
 
+  // Deterministic /loop handling shared by the command.execute.before hook
+  // (TUI path) and the chat.message fallback below (opencode run path), so
+  // every mode applies the exact same parsing and input guards.
+  const runLoopCommand = async (
+    args: string,
+    sessionID: string | null | undefined,
+    parts: Part[]
+  ): Promise<void> => {
+    setActive(sessionID)
+    let result
+    try {
+      result = await scheduler.handleUserCommand(args, ctx.directory, sessionID)
+    } catch (error) {
+      result = { message: `❌ /loop failed: ${errorMessage(error)}` }
+    }
+    if (result.message.startsWith("❌") && !result.modelPrompt) {
+      result.modelPrompt = buildLoopFailedPrompt(result.message)
+    } else if (!result.modelPrompt) {
+      result.modelPrompt = buildLoopResultPrompt(result.message)
+    }
+    consumeLoopCommand(parts, result.modelPrompt)
+    await logger(result.message.startsWith("❌") ? "error" : "info", result.message, {
+      sessionID,
+      action: commandAction(args),
+      argumentLength: args.length,
+    })
+  }
+
   const hooks: Hooks = {
     event: async ({ event }) => {
       const e = event as { type?: string; properties?: any; sessionID?: string }
@@ -172,31 +201,28 @@ export const LoopPlugin: Plugin = async (ctx) => {
       }
     },
 
-    "chat.message": async (input) => {
+    "chat.message": async (input, output) => {
       setActive(input.sessionID)
+      // Run-mode fallback (issue #18): `opencode run` — headless and `-i` —
+      // sends "/loop ..." as a plain user message via session.prompt and
+      // never emits command.execute.before, so the raw $ARGUMENTS would go
+      // straight to the model and every deterministic guard would be
+      // bypassed. Intercept the literal command text here and run the same
+      // deterministic parser. Parts already consumed by
+      // command.execute.before are synthetic/ignored and skipped, so the
+      // TUI path is never handled twice.
+      for (const part of output?.parts ?? []) {
+        if (part.type !== "text" || part.synthetic || part.ignored) continue
+        const match = /^\/loop(?:\s+([\s\S]*))?$/.exec(part.text.trim())
+        if (!match) return
+        await runLoopCommand(match[1] ?? "", input.sessionID, output.parts)
+        return
+      }
     },
 
     "command.execute.before": async (input, output) => {
       if (input.command !== "loop") return
-      setActive(input.sessionID)
-      const args = input.arguments || ""
-      let result
-      try {
-        result = await scheduler.handleUserCommand(args, ctx.directory, input.sessionID)
-      } catch (error) {
-        result = { message: `❌ /loop failed: ${errorMessage(error)}` }
-      }
-      if (result.message.startsWith("❌") && !result.modelPrompt) {
-        result.modelPrompt = buildLoopFailedPrompt(result.message)
-      } else if (!result.modelPrompt) {
-        result.modelPrompt = buildLoopResultPrompt(result.message)
-      }
-      consumeLoopCommand(output.parts, result.modelPrompt)
-      await logger(result.message.startsWith("❌") ? "error" : "info", result.message, {
-        sessionID: input.sessionID,
-        action: commandAction(args),
-        argumentLength: args.length,
-      })
+      await runLoopCommand(input.arguments || "", input.sessionID, output.parts)
     },
   }
 
