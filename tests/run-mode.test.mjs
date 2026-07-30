@@ -200,3 +200,86 @@ test("chat.message without output argument still tracks the active session", asy
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test("run mode: opencode run quotes argv with spaces — quoted text is still intercepted", async () => {
+  // Real-world part.text from `opencode run "/loop 5m"` is "\"/loop 5m\""
+  // (opencode re-quotes argv elements containing spaces). Regression test
+  // for the quote-stripping fix: without it the regex never matches and
+  // every guard is bypassed end-to-end despite unit tests passing.
+  const dir = mkdtempSync(join(tmpdir(), "loop-run-"))
+  try {
+    const hooks = await makeHooks(dir)
+
+    const bare = textMessage('"/loop 5m"')
+    await hooks["chat.message"]({ sessionID: "sRun" }, bare)
+    assert.ok(
+      bare.parts[0].text.includes('Missing prompt after interval "5m"'),
+      `expected missing-prompt failure for quoted input, got: ${bare.parts[0].text.slice(0, 120)}`
+    )
+    assert.equal(taskCount(dir), 0, "no task created from quoted bare interval")
+
+    const cron = textMessage('"/loop */5 * * * * check something"')
+    await hooks["chat.message"]({ sessionID: "sRun" }, cron)
+    assert.ok(
+      cron.parts[0].text.includes("Cron expressions are not supported"),
+      `expected cron rejection for quoted input, got: ${cron.parts[0].text.slice(0, 120)}`
+    )
+    assert.equal(taskCount(dir), 0, "no task created from quoted cron")
+
+    const valid = textMessage('"/loop 1m ping the server"')
+    await hooks["chat.message"]({ sessionID: "sRun" }, valid)
+    assert.equal(taskCount(dir), 1, "quoted valid command creates the task")
+    const task = JSON.parse(readFileSync(tasksFile(dir), "utf-8")).tasks[0]
+    assert.equal(task.mode, "fixed")
+    assert.equal(task.prompt, "ping the server")
+
+    await hooks.dispose()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("run mode: single-quoted command text is also intercepted", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-run-"))
+  try {
+    const hooks = await makeHooks(dir)
+    const out = textMessage("'/loop 5m'")
+    await hooks["chat.message"]({ sessionID: "sRun" }, out)
+    assert.ok(
+      out.parts[0].text.includes('Missing prompt after interval "5m"'),
+      `expected missing-prompt failure for single-quoted input, got: ${out.parts[0].text.slice(0, 120)}`
+    )
+    assert.equal(taskCount(dir), 0)
+    await hooks.dispose()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("run mode: /loop in a later text part is still found (continue, not return)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-run-"))
+  const hooks = await makeHooks(dir)
+  try {
+    const out = {
+      message: { id: "m9", sessionID: "sRun", role: "user", time: { created: Date.now() } },
+      parts: [
+        { id: "p1", sessionID: "sRun", messageID: "m9", type: "text", text: "preface" },
+        { id: "p2", sessionID: "sRun", messageID: "m9", type: "text", text: "/loop 5m" },
+      ],
+    }
+    await hooks["chat.message"]({ sessionID: "sRun" }, out)
+    // consumeLoopCommand replaces the FIRST text part with the result and
+    // marks the rest ignored — interception happened if the error text
+    // landed in parts[0] and the command part was consumed.
+    assert.ok(
+      out.parts[0].text.includes('Missing prompt after interval "5m"'),
+      `expected interception of later part, got: ${out.parts[0].text.slice(0, 120)}`
+    )
+    assert.equal(out.parts[0].synthetic, true)
+    assert.equal(out.parts[1].ignored, true)
+    assert.equal(taskCount(dir), 0)
+  } finally {
+    await hooks.dispose()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

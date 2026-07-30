@@ -27,7 +27,7 @@ import type { Plugin, Hooks, PluginModule } from "@opencode-ai/plugin"
 import type { Part } from "@opencode-ai/sdk"
 import { LoopStore } from "./store.js"
 import { InstanceLock } from "./instance-lock.js"
-import { Scheduler } from "./scheduler.js"
+import { Scheduler, stripOuterQuotes } from "./scheduler.js"
 import { CronParser } from "./cron-parser.js"
 import { Jitter } from "./jitter.js"
 import { buildLoopTools } from "./tools/loop-tools.js"
@@ -211,10 +211,14 @@ export const LoopPlugin: Plugin = async (ctx) => {
       // deterministic parser. Parts already consumed by
       // command.execute.before are synthetic/ignored and skipped, so the
       // TUI path is never handled twice.
+      //
+      // Note: opencode run re-quotes argv elements that contain spaces, so
+      // the stored text is often `"/loop 5m"` (with literal quotes) — strip
+      // outer quotes before matching, mirroring handleUserCommand.
       for (const part of output?.parts ?? []) {
         if (part.type !== "text" || part.synthetic || part.ignored) continue
-        const match = /^\/loop(?:\s+([\s\S]*))?$/.exec(part.text.trim())
-        if (!match) return
+        const match = /^\/loop(?:\s+([\s\S]*))?$/.exec(stripOuterQuotes(part.text))
+        if (!match) continue
         await runLoopCommand(match[1] ?? "", input.sessionID, output.parts)
         return
       }
