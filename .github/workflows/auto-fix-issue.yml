@@ -98,6 +98,7 @@ jobs:
           mini -t "$TASK" \
             --model openai/k3-256k \
             --yolo \
+            --exit-immediately \
             --cost-limit 0 \
             --output "traj-${ISSUE_NUMBER}.json" || true
 
