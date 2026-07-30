@@ -100,7 +100,7 @@ function parseFlagPrefix(text: string): {
 }
 
 /** Strip one layer of matching surrounding quotes (B10). */
-function stripOuterQuotes(text: string): string {
+export function stripOuterQuotes(text: string): string {
   const t = text.trim()
   if (t.length >= 2) {
     const first = t[0]
