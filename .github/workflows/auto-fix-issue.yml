@@ -51,7 +51,9 @@ jobs:
           KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.KIMI_API_KEY }}
           OPENAI_BASE_URL: https://api.kimi.com/coding/v1
-          # Skip the interactive first-run setup wizard (aborts in non-TTY CI)
+          # Skip the interactive first-run setup wizard (aborts in non-TTY CI);
+          # MSWEA_CONFIGURED is the actual bypass flag, MSWEA_MODEL_NAME sets the model
+          MSWEA_CONFIGURED: "true"
           MSWEA_MODEL_NAME: openai/k3-256k
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
