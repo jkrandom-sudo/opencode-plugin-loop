@@ -8,12 +8,12 @@
  *   /loop check the deploy status           — adaptive interval (1min–1hr)
  *   /loop                                  — bare: read .opencode/loop.md or default maintenance
  *
- * Subcommands (all session-scoped; add `--all` to cross sessions):
- *   /loop list | status [--all]            — show tasks
- *   /loop cancel | stop <id> [--all]       — cancel one
- *   /loop pause <id> [--all]               — pause one
- *   /loop resume <id> [--all]              — resume one
- *   /loop stop-all [--all]                 — cancel all
+ * Subcommands (all scoped to the current session):
+ *   /loop list | status                        — show tasks
+ *   /loop cancel | stop <id>                   — cancel one
+ *   /loop pause <id>                           — pause one
+ *   /loop resume <id>                          — resume one
+ *   /loop stop | stop-all                      — cancel all tasks in this session
  *
  * Per-session architecture:
  *   - chat.message hook tracks the current active sessionID
