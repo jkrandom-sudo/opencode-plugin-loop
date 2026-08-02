@@ -1,10 +1,10 @@
 /**
  * Scheduler: orchestrates loop command parsing, task firing, and adaptive rescheduling.
  *
- * Per-session scoping:
+ * Per-session scoping (matching Claude Code's /loop):
  *   - Every task is bound to a sessionID at creation time
- *   - Strict: cancel/pause/resume only operate on tasks in the current session
- *   - --all flag: bypass session filter for global operations
+ *   - list/cancel/pause/resume/stop only operate on tasks in the current session
+ *   - Tasks from other sessions are invisible to management commands
  *
  * Implementation note: factory pattern (no `this` reliance) so opencode's
  * plugin loader can call us with or without `new`.
@@ -47,10 +47,10 @@ interface SchedulerInstance {
   inflight: Set<string>
   setCurrentSession(sessionID: string | null): void
   handleUserCommand(args: string, directory: string, sessionID?: string | null): Promise<CommandParseResult>
-  handleCancel(id: string, allFlag: boolean): CommandParseResult | Promise<CommandParseResult>
-  handlePause(id: string, allFlag: boolean): CommandParseResult | Promise<CommandParseResult>
-  handleResume(id: string, allFlag: boolean): Promise<CommandParseResult>
-  formatTaskList(tasks: LoopTask[], showSession?: boolean): string
+  handleCancel(id: string): CommandParseResult | Promise<CommandParseResult>
+  handlePause(id: string): CommandParseResult | Promise<CommandParseResult>
+  handleResume(id: string): Promise<CommandParseResult>
+  formatTaskList(tasks: LoopTask[]): string
   loadDefaultPrompt(directory: string): string
   getDueTasks(now?: number): Promise<LoopTask[]>
   getDueTasksForSession(sessionID: string, now?: number): Promise<LoopTask[]>
@@ -71,9 +71,9 @@ export type { SchedulerInstance }
  * Scanning stops at the first non-flag token or at a `--` terminator; the
  * remainder is returned as the original substring (whitespace and newlines
  * preserved), so prompt text that merely looks like a flag (`--once`,
- * `--all`, `--jitter=*`) is never stripped from the prompt body.
+ * `--jitter=*`) is never stripped from the prompt body.
  */
-const PREFIX_FLAGS = new Set(["--once", "--all", "--jitter=true", "--jitter=false"])
+const PREFIX_FLAGS = new Set(["--once", "--jitter=true", "--jitter=false"])
 
 function parseFlagPrefix(text: string): {
   once: boolean
@@ -94,7 +94,7 @@ function parseFlagPrefix(text: string): {
       return { once, jitterEnabled, prompt: rest.trim() }
     }
     if (token === "--once") once = true
-    else if (token !== "--all") jitterEnabled = token === "--jitter=true"
+    else jitterEnabled = token === "--jitter=true"
     rest = rest.slice(m[0].length)
   }
 }
@@ -124,7 +124,7 @@ const CC_FLAG_MAP: Record<string, string> = {
 }
 
 /** Flags that are meaningful in command position (not errors when leading). */
-const LEADING_OK = new Set(["--all", "--jitter=true", "--jitter=false", "--once", "--"])
+const LEADING_OK = new Set(["--jitter=true", "--jitter=false", "--once", "--"])
 
 /** crude cron-expression detector (five-field crontab syntax) (B9). */
 function looksLikeCron(tokens: string[]): boolean {
@@ -140,17 +140,16 @@ Usage:
   /loop                             Maintenance mode (uses .opencode/loop.md when present)
   /loop help                        Show this help
 
-Subcommands (session-scoped; add --all to cross sessions):
-  list | status [--all]             Show loop tasks
-  cancel <id> [--all]               Cancel one task
-  stop [<id>] [--all]               Cancel one task, or every task in scope when no id is given
-  pause <id> [--all]                Pause one task
-  resume <id> [--all]               Resume one task
-  stop-all [--all]                  Cancel all tasks
+Subcommands (tasks are bound to the session that created them):
+  list | status                     Show this session's loop tasks
+  cancel <id>                       Cancel one task
+  stop [<id>]                       Cancel one task, or every task in this session when no id is given
+  pause <id>                        Pause one task
+  resume <id>                       Resume one task
+  stop-all                          Cancel all tasks in this session
 
 Flags (recognized only before the prompt begins; use -- to force the rest
 to be treated as prompt text verbatim):
-  --all                             Operate across all sessions
   --jitter=true|false               Force Jitter on/off for a fixed task
   --once                            Fire once, then auto-cancel (fixed tasks only)
 
@@ -180,7 +179,6 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
       if (sessionID !== undefined) inst.currentSessionID = sessionID
       const trimmed = stripOuterQuotes(args.trim())
       const tokens = trimmed === "" ? [] : trimmed.split(/\s+/)
-      const allFlag = tokens.includes("--all")
       let head = tokens[0]?.toLowerCase()
 
       // Claude Code-style leading flags map to subcommands (P-1).
@@ -195,48 +193,31 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
         }
       }
 
-      // Leading --all is sugar: `/loop --all list` == `/loop list --all`.
-      if (head === "--all") {
-        tokens.shift()
-        head = tokens[0]?.toLowerCase()
-      }
-
       if (head === "cancel" || head === "stop") {
-        const id = tokens[1] === "--all" ? tokens[2] : tokens[1]
+        const id = tokens[1]
         if (!id) {
-          if (head === "cancel") return { message: "❌ Usage: /loop cancel <taskId> [--all]" }
-          // Bare `/loop stop`: cancel every task in scope (session unless --all),
-          // matching Claude Code's stop semantics for the current context.
-          if (allFlag) {
-            const n = await inst.opts.store.cancelAll()
-            return { message: `🛑 Cancelled ${n} task(s) across all sessions` }
-          }
+          if (head === "cancel") return { message: "❌ Usage: /loop cancel <taskId>" }
+          // Bare `/loop stop`: cancel every task in this session.
           const removed = await inst.opts.store.cancelBySession(inst.currentSessionID ?? "")
           return { message: `🛑 Cancelled ${removed} task(s) in current session` }
         }
-        return inst.handleCancel(id, allFlag)
+        return inst.handleCancel(id)
       }
       if (head === "list" || head === "status") {
-        const tasks = allFlag
-          ? inst.opts.store.list()
-          : inst.opts.store.listBySession(inst.currentSessionID ?? "")
-        return { message: inst.formatTaskList(tasks, allFlag) }
+        const tasks = inst.opts.store.listBySession(inst.currentSessionID ?? "")
+        return { message: inst.formatTaskList(tasks) }
       }
       if (head === "pause") {
         const id = tokens[1]
-        if (!id) return { message: "❌ Usage: /loop pause <taskId> [--all]" }
-        return inst.handlePause(id, allFlag)
+        if (!id) return { message: "❌ Usage: /loop pause <taskId>" }
+        return inst.handlePause(id)
       }
       if (head === "resume") {
         const id = tokens[1]
-        if (!id) return { message: "❌ Usage: /loop resume <taskId> [--all]" }
-        return inst.handleResume(id, allFlag)
+        if (!id) return { message: "❌ Usage: /loop resume <taskId>" }
+        return inst.handleResume(id)
       }
       if (head === "stop-all") {
-        if (allFlag) {
-          const n = await inst.opts.store.cancelAll()
-          return { message: `🛑 Cancelled ${n} task(s) across all sessions` }
-        }
         const removed = await inst.opts.store.cancelBySession(inst.currentSessionID ?? "")
         return { message: `🛑 Cancelled ${removed} task(s) in current session` }
       }
@@ -342,39 +323,30 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
       return { message: "❌ Empty loop command — see `/loop help`." }
     },
 
-    handleCancel(id, allFlag) {
+    handleCancel(id) {
       const task = inst.opts.store.get(id)
-      if (!task) return { message: `❌ No task ${id}` }
-      if (!allFlag && task.sessionID !== inst.currentSessionID) {
-        return {
-          message: `❌ Task ${id} belongs to another session (${task.sessionID.slice(0, 8)}). Add \`--all\` to override.`,
-        }
+      if (!task || task.sessionID !== inst.currentSessionID) {
+        return { message: `❌ No task ${id} in this session` }
       }
       return inst.opts.store.cancel(id).then((r) => ({
-        message: r ? `🛑 Cancelled ${id}` : `❌ No task ${id}`,
+        message: r ? `🛑 Cancelled ${id}` : `❌ No task ${id} in this session`,
       }))
     },
 
-    handlePause(id, allFlag) {
+    handlePause(id) {
       const task = inst.opts.store.get(id)
-      if (!task) return { message: `❌ No task ${id}` }
-      if (!allFlag && task.sessionID !== inst.currentSessionID) {
-        return {
-          message: `❌ Task ${id} belongs to another session. Add \`--all\` to override.`,
-        }
+      if (!task || task.sessionID !== inst.currentSessionID) {
+        return { message: `❌ No task ${id} in this session` }
       }
       return inst.opts.store.setPaused(id, true).then((r) => ({
-        message: r ? `⏸ Paused ${id}` : `❌ No task ${id}`,
+        message: r ? `⏸ Paused ${id}` : `❌ No task ${id} in this session`,
       }))
     },
 
-    async handleResume(id, allFlag) {
+    async handleResume(id) {
       const task = inst.opts.store.get(id)
-      if (!task) return { message: `❌ No task ${id}` }
-      if (!allFlag && task.sessionID !== inst.currentSessionID) {
-        return {
-          message: `❌ Task ${id} belongs to another session. Add \`--all\` to override.`,
-        }
+      if (!task || task.sessionID !== inst.currentSessionID) {
+        return { message: `❌ No task ${id} in this session` }
       }
       const r = await inst.opts.store.setPaused(id, false)
       if (r) {
@@ -388,10 +360,10 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
           await inst.opts.store.reschedule(r.id, Date.now() + r.adaptiveMaxMs)
         }
       }
-      return { message: r ? `▶ Resumed ${id}` : `❌ No task ${id}` }
+      return { message: r ? `▶ Resumed ${id}` : `❌ No task ${id} in this session` }
     },
 
-    formatTaskList(tasks, showSession = false) {
+    formatTaskList(tasks) {
       if (tasks.length === 0)
         return "📭 No loop tasks. Use `/loop <prompt>` or `/loop 5m <prompt>` to create one."
       const lines = [`📋 ${tasks.length} loop task(s):`]
@@ -404,13 +376,11 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
               : `maintenance ${(t.adaptiveMaxMs ?? 0) / 1000}s`
         const status = t.paused ? "⏸ paused" : "▶ active"
         const onceTag = t.once ? " • once" : ""
-        const sessionTag =
-          showSession && t.sessionID ? ` [s:${t.sessionID.slice(0, 8)}]` : ""
         const preview = t.prompt.length > 60 ? t.prompt.slice(0, 60) + "..." : t.prompt
-        lines.push(`  [${t.id}]${sessionTag} ${status} • ${interval}${onceTag} • ${preview}`)
+        lines.push(`  [${t.id}] ${status} • ${interval}${onceTag} • ${preview}`)
       }
       lines.push(
-        `Manage: \`/loop cancel|pause|resume <id>\` (add \`--all\` to cross sessions) or \`/loop stop-all\``
+        `Manage: \`/loop cancel|pause|resume <id>\` or \`/loop stop-all\``
       )
       return lines.join("\n")
     },

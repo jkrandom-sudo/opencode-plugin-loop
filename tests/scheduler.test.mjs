@@ -251,55 +251,56 @@ test("/loop list defaults to current session", async () => {
     sched.currentSessionID = "sA"
     const r = await sched.handleUserCommand("list", "/tmp", "sA")
     assert.match(r.message, /1 loop task/, "A sees 1 task")
-    assert.ok(!r.message.includes("sB"), "A does not see B's session tag (--all not used)")
+    assert.ok(!r.message.includes("in B"), "A does not see B's task")
   } finally {
     rmSync(dir, { recursive: true })
   }
 })
 
-test("/loop list --all shows all sessions with tags", async () => {
+test("/loop list --all is just list: --all is not a flag anymore", async () => {
   const { sched, dir } = makeScheduler()
   try {
     await sched.handleUserCommand("5m in A", "/tmp", "sA")
     await sched.handleUserCommand("5m in B", "/tmp", "sB")
     sched.currentSessionID = "sA"
     const r = await sched.handleUserCommand("list --all", "/tmp", "sA")
-    assert.match(r.message, /2 loop task/, "all sees 2")
-    assert.match(r.message, /\[s:/, "shows session tags")
+    assert.match(r.message, /1 loop task/, "only the current session is listed")
+    assert.ok(!r.message.includes("[s:"), "no session tags")
   } finally {
     rmSync(dir, { recursive: true })
   }
 })
 
-test("/loop cancel refuses cross-session without --all", async () => {
+test("/loop cancel of another session's task is refused as not-in-session", async () => {
   const { sched, store, dir } = makeScheduler()
   try {
-    const a = await sched.handleUserCommand("5m in A", "/tmp", "sA")
+    await sched.handleUserCommand("5m in A", "/tmp", "sA")
     const b = await sched.handleUserCommand("5m in B", "/tmp", "sB")
     sched.currentSessionID = "sA"
     const r = await sched.handleUserCommand(`cancel ${b.task.id}`, "/tmp", "sA")
-    assert.match(r.message, /another session/)
+    assert.match(r.message, /No task .+ in this session/)
+    assert.ok(!r.message.includes("--all"), "no --all hint remains")
     assert.ok(store.get(b.task.id), "B task still exists")
   } finally {
     rmSync(dir, { recursive: true })
   }
 })
 
-test("/loop cancel --all overrides cross-session", async () => {
+test("/loop cancel <id> --all no longer overrides cross-session", async () => {
   const { sched, store, dir } = makeScheduler()
   try {
     await sched.handleUserCommand("5m in A", "/tmp", "sA")
     const b = await sched.handleUserCommand("5m in B", "/tmp", "sB")
     sched.currentSessionID = "sA"
     const r = await sched.handleUserCommand(`cancel ${b.task.id} --all`, "/tmp", "sA")
-    assert.match(r.message, /Cancelled/)
-    assert.equal(store.get(b.task.id), null)
+    assert.match(r.message, /No task .+ in this session/)
+    assert.ok(store.get(b.task.id), "B task untouched")
   } finally {
     rmSync(dir, { recursive: true })
   }
 })
 
-test("/loop stop-all defaults to current session only", async () => {
+test("/loop stop-all cancels the current session only", async () => {
   const { sched, store, dir } = makeScheduler()
   try {
     await sched.handleUserCommand("5m in A1", "/tmp", "sA")
@@ -315,40 +316,40 @@ test("/loop stop-all defaults to current session only", async () => {
   }
 })
 
-test("/loop stop-all --all cancels everything", async () => {
+test("/loop stop-all --all still only affects the current session", async () => {
   const { sched, store, dir } = makeScheduler()
   try {
     await sched.handleUserCommand("5m in A", "/tmp", "sA")
     await sched.handleUserCommand("5m in B", "/tmp", "sB")
     sched.currentSessionID = "sA"
     const r = await sched.handleUserCommand("stop-all --all", "/tmp", "sA")
-    assert.match(r.message, /across all sessions/)
-    assert.equal(store.list().length, 0)
+    assert.match(r.message, /current session/)
+    assert.equal(store.listBySession("sA").length, 0)
+    assert.equal(store.listBySession("sB").length, 1, "B untouched")
   } finally {
     rmSync(dir, { recursive: true })
   }
 })
 
-test("/loop pause refuses cross-session without --all", async () => {
+test("/loop pause of another session's task is refused", async () => {
   const { sched, store, dir } = makeScheduler()
   try {
     const b = await sched.handleUserCommand("5m in B", "/tmp", "sB")
     sched.currentSessionID = "sA"
     const r = await sched.handleUserCommand(`pause ${b.task.id}`, "/tmp", "sA")
-    assert.match(r.message, /another session/)
+    assert.match(r.message, /No task .+ in this session/)
     assert.equal(store.get(b.task.id).paused, false)
   } finally {
     rmSync(dir, { recursive: true })
   }
 })
 
-test("/loop resume --all works cross-session and rearms fixed", async () => {
+test("/loop resume in the owning session rearms fixed", async () => {
   const { sched, store, dir } = makeScheduler()
   try {
     const b = await sched.handleUserCommand("5m in B", "/tmp", "sB")
     await store.setPaused(b.task.id, true)
-    sched.currentSessionID = "sA"
-    const r = await sched.handleUserCommand(`resume ${b.task.id} --all`, "/tmp", "sA")
+    const r = await sched.handleUserCommand(`resume ${b.task.id}`, "/tmp", "sB")
     assert.match(r.message, /Resumed/)
     assert.equal(store.get(b.task.id).paused, false)
   } finally {
@@ -428,7 +429,7 @@ test("/loop help shows usage with all flags", async () => {
   try {
     const r = await sched.handleUserCommand("help", "/tmp", "s1")
     assert.equal(r.task, undefined)
-    assert.match(r.message, /--all/)
+    assert.ok(!r.message.includes("--all"), "--all is gone from help")
     assert.match(r.message, /--jitter=true\|false/)
     assert.match(r.message, /--once/)
     assert.match(r.message, /--cancel, --list/)
@@ -476,13 +477,15 @@ test("cron-shaped input is rejected with guidance", async () => {
   }
 })
 
-test("--all is stripped from fixed and adaptive prompts (B2)", async () => {
-  const { sched, dir } = makeScheduler()
+test("--all is no longer a flag: kept as prompt text / rejected in command position", async () => {
+  const { sched, store, dir } = makeScheduler()
   try {
     const r1 = await sched.handleUserCommand("5m --all check deploy", "/tmp", "s1")
-    assert.equal(r1.task.prompt, "check deploy")
+    assert.equal(r1.task.prompt, "--all check deploy", "not a known flag → treated as prompt text")
     const r2 = await sched.handleUserCommand("--all check the weather", "/tmp", "s1")
-    assert.equal(r2.task.prompt, "check the weather")
+    assert.equal(r2.task, undefined)
+    assert.match(r2.message, /Unknown flag "--all"/)
+    assert.equal(store.list().length, 1)
   } finally {
     rmSync(dir, { recursive: true })
   }
@@ -740,14 +743,14 @@ test("/loop stop <id> still cancels a single task", async () => {
   }
 })
 
-test("/loop stop --all without an id cancels across sessions", async () => {
+test("/loop stop --all: the extra token is treated as an id and not found", async () => {
   const { sched, store, dir } = makeScheduler()
   try {
     await sched.handleUserCommand("1m task A1", "/tmp", "sA")
     await sched.handleUserCommand("1m task B1", "/tmp", "sB")
     const r = await sched.handleUserCommand("stop --all", "/tmp", "sA")
-    assert.match(r.message, /Cancelled 2 task\(s\) across all sessions/)
-    assert.equal(store.list().length, 0)
+    assert.match(r.message, /No task --all in this session/)
+    assert.equal(store.list().length, 2, "nothing cancelled")
   } finally {
     rmSync(dir, { recursive: true })
   }

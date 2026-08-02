@@ -27,9 +27,10 @@ export interface LoopStoreOptions {
    * Ephemeral lifecycle (default true): tasks die with their owning process.
    * Each task records ownerPid + ownerStartedAt; on load, tasks whose owner
    * process is confirmed dead are dropped, while tasks owned by other LIVE
-   * processes are kept (visible/manageable via --all). Tasks without owner
-   * fields (written before owner leases existed) fall back to the file-writer
-   * identity rule (pid + start time).
+   * processes are kept in the shared file (they are fired by their owner;
+   * this instance never touches them). Tasks without owner fields (written
+   * before owner leases existed) fall back to the file-writer identity rule
+   * (pid + start time).
    */
   ephemeralTasks?: boolean
   /** Injectable process identity for tests; defaults to the current process. */
@@ -64,7 +65,6 @@ interface LoopStoreInstance {
   create(input: CreateTaskInput): Promise<LoopTask>
   cancel(id: string): Promise<LoopTask | null>
   cancelByPromptPrefix(prefix: string): Promise<LoopTask | null>
-  cancelAll(): Promise<number>
   cancelBySession(sessionID: string): Promise<number>
   list(): LoopTask[]
   listBySession(sessionID: string): LoopTask[]
@@ -228,7 +228,10 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
     },
     persist: async () => {
       // Merge with the on-disk state instead of blindly overwriting it, so
-      // concurrent instances do not lose each other's tasks (B1).
+      // concurrent instances do not lose each other's tasks (B1). Merge
+      // direction matters: only ids this instance actually touched (dirtyIds)
+      // may overwrite the disk copy; an untouched in-memory task is by
+      // definition staler than the disk version and must yield to it.
       const disk = readDisk()
       if (disk) {
         const diskIds = new Set(disk.tasks.map((t) => t.id))
@@ -238,12 +241,17 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
           byId.set(dt.id, dt)
         }
         for (const t of inst.state.tasks) {
-          if (!dirtyIds.has(t.id) && !diskIds.has(t.id)) {
+          if (dirtyIds.has(t.id)) {
+            byId.set(t.id, t)
+            continue
+          }
+          if (!diskIds.has(t.id)) {
             // Vanished from disk and untouched by us: another instance
             // cancelled it — accept the deletion.
             continue
           }
-          byId.set(t.id, t)
+          // Untouched by us and present on disk: keep the disk version
+          // (already in byId) — it may carry another process's updates.
         }
         inst.state.tasks = Array.from(byId.values())
       }
@@ -313,18 +321,6 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
       const task = inst.state.tasks.find((t) => t.prompt.startsWith(prefix))
       if (!task) return null
       return inst.cancel(task.id)
-    },
-    cancelAll: async () => {
-      for (const t of inst.state.tasks) tombstones.add(t.id)
-      // Also tombstone ids only known to the disk copy (created by other
-      // instances) so stop-all --all really empties the shared file.
-      const disk = readDisk()
-      if (disk) for (const t of disk.tasks) tombstones.add(t.id)
-      const n = inst.state.tasks.length
-      inst.state.tasks = []
-      dirtyIds.clear()
-      await inst.persist()
-      return n
     },
     cancelBySession: async (sessionID) => {
       if (!sessionID) return 0

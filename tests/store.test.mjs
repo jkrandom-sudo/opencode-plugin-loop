@@ -688,21 +688,31 @@ test("merge-write: tasks cancelled by another instance are accepted on next pers
   }
 })
 
-test("cancelAll also tombstones ids only present on disk", async () => {
+test("merge-write: an untouched in-memory task never overwrites a newer disk version", async () => {
   const dir = mkdtempSync(join(tmpdir(), "loop-test-"))
   try {
     const id = { pid: 1, startedAt: Date.now() }
     const s1 = new LoopStore({ storageDir: dir, processIdentity: id })
-    const s2 = new LoopStore({ storageDir: dir, processIdentity: id })
     await s1.load()
-    await s1.create({ prompt: "mine", mode: "fixed", intervalMs: 60_000, directory: "/tmp", sessionID: "sA" })
+    const t = await s1.create({ prompt: "shared", mode: "fixed", intervalMs: 60_000, directory: "/tmp", sessionID: "sA" })
+
+    // s2 loads the same task, pauses it, and persists — disk now newer.
+    const s2 = new LoopStore({ storageDir: dir, processIdentity: id })
     await s2.load()
-    await s2.create({ prompt: "peer", mode: "fixed", intervalMs: 60_000, directory: "/tmp", sessionID: "sB" })
-    // s1's memory only knows "mine"; stop-all must also kill s2's "peer".
-    await s1.cancelAll()
-    const s3 = new LoopStore({ storageDir: dir, processIdentity: id })
-    await s3.load()
-    assert.equal(s3.list().length, 0)
+    await s2.setPaused(t.id, true)
+
+    // s1 never touched the task (not dirty). Its persist of an UNRELATED
+    // change must not roll back s2's pause.
+    await s1.create({ prompt: "unrelated", mode: "fixed", intervalMs: 60_000, directory: "/tmp", sessionID: "sA" })
+    const disk = JSON.parse(readFileSync(join(dir, "tasks.json"), "utf-8"))
+    const shared = disk.tasks.find((x) => x.id === t.id)
+    assert.equal(shared.paused, true, "s2's pause survives s1's persist")
+    assert.equal(s1.get(t.id).paused, true, "s1's memory converges to disk")
+
+    // Dirty writes still win: s1 now pauses-then-resumes deliberately.
+    await s1.setPaused(t.id, false)
+    const disk2 = JSON.parse(readFileSync(join(dir, "tasks.json"), "utf-8"))
+    assert.equal(disk2.tasks.find((x) => x.id === t.id).paused, false, "dirty version wins")
   } finally {
     rmSync(dir, { recursive: true })
   }

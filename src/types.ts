@@ -62,8 +62,8 @@ export interface LoopConfig {
    * Ephemeral lifecycle (default true, matching Claude Code's /loop): tasks die
    * with the opencode process that created them. Each task records its owner
    * process; on load, tasks whose owner is confirmed dead are dropped, while
-   * tasks owned by other LIVE processes are kept (visible via --all). Set to
-   * false to keep tasks across process restarts.
+   * tasks owned by other LIVE processes are left untouched (each process fires
+   * only its own tasks). Set to false to keep tasks across process restarts.
    */
   ephemeralTasks?: boolean
   /**

@@ -233,41 +233,41 @@ test("scheduler list is session-scoped by default", async () => {
   }
 })
 
-test("scheduler list --all shows all sessions with [s:] tags", async () => {
+test("scheduler list --all lists only the current session (no --all anymore)", async () => {
   const { sched, dir } = makeScheduler()
   try {
     await sched.handleUserCommand("5m a1", "/tmp", SID_A)
     await sched.handleUserCommand("5m b1", "/tmp", SID_B)
     sched.currentSessionID = SID_A
     const r = await sched.handleUserCommand("list --all", "/tmp", SID_A)
-    assert.match(r.message, /2 loop task/)
-    assert.match(r.message, /\[s:/, "session tags present")
+    assert.match(r.message, /1 loop task/)
+    assert.ok(!r.message.includes("[s:"), "no session tags")
   } finally {
     rmSync(dir, { recursive: true })
   }
 })
 
-test("scheduler cancel refuses cross-session without --all", async () => {
+test("scheduler cancel of another session's task is refused as not-in-session", async () => {
   const { sched, store, dir } = makeScheduler()
   try {
     const b = await sched.handleUserCommand("5m in B", "/tmp", SID_B)
     sched.currentSessionID = SID_A
     const r = await sched.handleUserCommand(`cancel ${b.task.id}`, "/tmp", SID_A)
-    assert.match(r.message, /another session/)
+    assert.match(r.message, /No task .+ in this session/)
     assert.ok(store.get(b.task.id), "task preserved")
   } finally {
     rmSync(dir, { recursive: true })
   }
 })
 
-test("scheduler cancel --all overrides", async () => {
+test("scheduler cancel <id> --all no longer overrides cross-session", async () => {
   const { sched, store, dir } = makeScheduler()
   try {
     const b = await sched.handleUserCommand("5m in B", "/tmp", SID_B)
     sched.currentSessionID = SID_A
     const r = await sched.handleUserCommand(`cancel ${b.task.id} --all`, "/tmp", SID_A)
-    assert.match(r.message, /Cancelled/)
-    assert.equal(store.get(b.task.id), null)
+    assert.match(r.message, /No task .+ in this session/)
+    assert.ok(store.get(b.task.id), "task preserved")
   } finally {
     rmSync(dir, { recursive: true })
   }
@@ -289,14 +289,15 @@ test("scheduler stop-all defaults to current session only", async () => {
   }
 })
 
-test("scheduler stop-all --all cancels everything", async () => {
+test("scheduler stop-all --all still only affects the current session", async () => {
   const { sched, store, dir } = makeScheduler()
   try {
     await sched.handleUserCommand("5m a", "/tmp", SID_A)
     await sched.handleUserCommand("5m b", "/tmp", SID_B)
     const r = await sched.handleUserCommand("stop-all --all", "/tmp", SID_A)
-    assert.match(r.message, /across all sessions/)
-    assert.equal(store.list().length, 0)
+    assert.match(r.message, /current session/)
+    assert.equal(store.listBySession(SID_A).length, 0)
+    assert.equal(store.listBySession(SID_B).length, 1, "B intact")
   } finally {
     rmSync(dir, { recursive: true })
   }
@@ -830,12 +831,13 @@ test("loop_schedule set_fixed is session-scoped unless all is true", async () =>
       )
     )
     assert.equal(rejected.ok, false)
+    assert.match(rejected.error, /in this session/)
     assert.equal(store.get(task.id).mode, "adaptive")
 
     const allowed = JSON.parse(
       await tools.loop_schedule.execute(
-        { action: "set_fixed", taskId: task.id, intervalMs: 120_000, all: true },
-        mockCtx(SID_A, dir)
+        { action: "set_fixed", taskId: task.id, intervalMs: 120_000 },
+        mockCtx(SID_B, dir)
       )
     )
     assert.equal(allowed.ok, true)
@@ -869,7 +871,7 @@ test("loop_schedule keeps fixed reschedule times unrestricted", async () => {
   }
 })
 
-test("loop_schedule list defaults to current session", async () => {
+test("loop_schedule list only ever shows the current session", async () => {
   const { store, sched, dir } = makeScheduler()
   try {
     const tools = await buildLoopTools(store, sched)
@@ -878,15 +880,16 @@ test("loop_schedule list defaults to current session", async () => {
     const r = JSON.parse(await tools.loop_schedule.execute({ action: "list" }, mockCtx(SID_A, dir)))
     assert.equal(r.count, 1)
     assert.equal(r.scope, SID_A)
+    // `all` is gone from the schema; passing it changes nothing.
     const rAll = JSON.parse(await tools.loop_schedule.execute({ action: "list", all: true }, mockCtx(SID_A, dir)))
-    assert.equal(rAll.count, 2)
-    assert.equal(rAll.scope, "all")
+    assert.equal(rAll.count, 1)
+    assert.equal(rAll.scope, SID_A)
   } finally {
     rmSync(dir, { recursive: true })
   }
 })
 
-test("loop_schedule cancel refuses cross-session without all", async () => {
+test("loop_schedule cancel is refused for another session's task", async () => {
   const { store, sched, dir } = makeScheduler()
   try {
     const tools = await buildLoopTools(store, sched)
@@ -903,20 +906,21 @@ test("loop_schedule cancel refuses cross-session without all", async () => {
       )
     )
     assert.equal(r2.ok, false)
-    assert.match(r2.error, /another session/)
+    assert.match(r2.error, /in this session/)
     const r3 = JSON.parse(
       await tools.loop_schedule.execute(
         { action: "cancel", taskId: r1.task.id, all: true },
         mockCtx(SID_A, dir)
       )
     )
-    assert.equal(r3.ok, true)
+    assert.equal(r3.ok, false, "all=true no longer overrides")
+    assert.match(r3.error, /in this session/)
   } finally {
     rmSync(dir, { recursive: true })
   }
 })
 
-test("loop_status defaults to current session", async () => {
+test("loop_status only ever summarizes the current session", async () => {
   const { store, sched, dir } = makeScheduler()
   try {
     const tools = await buildLoopTools(store, sched)
@@ -926,8 +930,8 @@ test("loop_status defaults to current session", async () => {
     assert.equal(r.scope, SID_A)
     assert.equal(r.activeTasks, 1)
     const rAll = JSON.parse(await tools.loop_status.execute({ all: true }, mockCtx(SID_A, dir)))
-    assert.equal(rAll.scope, "all")
-    assert.equal(rAll.activeTasks, 2)
+    assert.equal(rAll.scope, SID_A)
+    assert.equal(rAll.activeTasks, 1)
   } finally {
     rmSync(dir, { recursive: true })
   }
@@ -1080,7 +1084,7 @@ test("plugin: tool layer enforces session scope", async () => {
     assert.equal(r2.count, 0)
 
     const r3 = JSON.parse(await tool.execute({ action: "list", all: true }, mockCtx(SID_A, dir)))
-    assert.equal(r3.count, 1)
+    assert.equal(r3.count, 0, "all=true no longer widens scope")
 
     const r4 = JSON.parse(await tool.execute({ action: "cancel", taskId: taskInB }, mockCtx(SID_A, dir)))
     assert.equal(r4.ok, false)

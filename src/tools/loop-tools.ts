@@ -5,10 +5,10 @@
  *   - loop_schedule: create/list/cancel/reschedule/set_fixed/pause/resume
  *   - loop_status:   show running tasks + recent fire history
  *
- * Per-session scoping:
+ * Per-session scoping (matching Claude Code's /loop):
  *   - create binds task to ctx.sessionID (ToolContext)
- *   - list/status default to current session, with `all: true` to see all
- *   - cancel/pause/resume/reschedule/set_fixed are session-scoped unless `all: true`
+ *   - list/status show only the current session's tasks
+ *   - cancel/pause/resume/reschedule/set_fixed only affect the current session's tasks
  */
 
 import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool"
@@ -24,7 +24,7 @@ export async function buildLoopTools(
   return {
     loop_schedule: tool({
       description:
-        "Manage /loop tasks: create, list, cancel, pause, resume, reschedule, or convert an Adaptive task to Fixed. Each task is bound to the session that created it; pass all=true to cross session boundaries.",
+        "Manage /loop tasks: create, list, cancel, pause, resume, reschedule, or convert an Adaptive task to Fixed. Each task is bound to the session that created it; management actions only affect the current session's tasks.",
       args: {
         action: z.enum(["create", "list", "cancel", "reschedule", "set_fixed", "pause", "resume"]),
         taskId: z.string().optional().describe("Required for cancel/reschedule/set_fixed/pause/resume"),
@@ -38,21 +38,23 @@ export async function buildLoopTools(
           .enum(["fixed", "adaptive", "maintenance"])
           .optional()
           .describe("Default: fixed if intervalMs set, else adaptive"),
-        all: z
-          .boolean()
-          .optional()
-          .describe("For list/cancel/reschedule/set_fixed/pause/resume: ignore session scope (cross-session)"),
       },
       async execute(args, ctx) {
         const directory = ctx.directory || process.cwd()
         const currentSID = ctx.sessionID
+        // Session-scoped lookup: tasks owned by other sessions are treated as
+        // nonexistent, matching Claude Code's per-session /loop jobs.
+        const getOwn = (id: string) => {
+          const t = store.get(id)
+          return t && t.sessionID === currentSID ? t : null
+        }
         switch (args.action) {
           case "list": {
-            const tasks = args.all ? store.list() : store.listBySession(currentSID)
+            const tasks = store.listBySession(currentSID)
             return JSON.stringify(
               {
                 ok: true,
-                scope: args.all ? "all" : currentSID,
+                scope: currentSID,
                 count: tasks.length,
                 tasks: tasks.map((t) => ({
                   id: t.id,
@@ -76,20 +78,14 @@ export async function buildLoopTools(
           case "cancel": {
             if (!args.taskId)
               return JSON.stringify({ ok: false, error: "taskId required" })
-            const t = store.get(args.taskId)
-            if (!t) return JSON.stringify({ ok: false, error: `No task ${args.taskId}` })
-            if (!args.all && t.sessionID !== currentSID) {
-              return JSON.stringify({
-                ok: false,
-                error: `Task belongs to another session (${t.sessionID}). Pass all=true to override.`,
-              })
-            }
+            if (!getOwn(args.taskId))
+              return JSON.stringify({ ok: false, error: `No task ${args.taskId} in this session` })
             const removed = await store.cancel(args.taskId)
             return JSON.stringify(
               {
                 ok: !!removed,
                 removed,
-                message: removed ? `Cancelled ${args.taskId}` : `No task ${args.taskId}`,
+                message: removed ? `Cancelled ${args.taskId}` : `No task ${args.taskId} in this session`,
               },
               null,
               2
@@ -99,14 +95,8 @@ export async function buildLoopTools(
           case "pause": {
             if (!args.taskId)
               return JSON.stringify({ ok: false, error: "taskId required" })
-            const t = store.get(args.taskId)
-            if (!t) return JSON.stringify({ ok: false, error: `No task ${args.taskId}` })
-            if (!args.all && t.sessionID !== currentSID) {
-              return JSON.stringify({
-                ok: false,
-                error: `Task belongs to another session. Pass all=true to override.`,
-              })
-            }
+            if (!getOwn(args.taskId))
+              return JSON.stringify({ ok: false, error: `No task ${args.taskId} in this session` })
             const r = await store.setPaused(args.taskId, true)
             return JSON.stringify({ ok: !!r, task: r }, null, 2)
           }
@@ -114,14 +104,8 @@ export async function buildLoopTools(
           case "resume": {
             if (!args.taskId)
               return JSON.stringify({ ok: false, error: "taskId required" })
-            const t = store.get(args.taskId)
-            if (!t) return JSON.stringify({ ok: false, error: `No task ${args.taskId}` })
-            if (!args.all && t.sessionID !== currentSID) {
-              return JSON.stringify({
-                ok: false,
-                error: `Task belongs to another session. Pass all=true to override.`,
-              })
-            }
+            if (!getOwn(args.taskId))
+              return JSON.stringify({ ok: false, error: `No task ${args.taskId} in this session` })
             const r = await store.setPaused(args.taskId, false)
             if (r) {
               // Re-arm per mode (B6), same as /loop resume.
@@ -205,14 +189,9 @@ export async function buildLoopTools(
             }
             if (!args.taskId)
               return JSON.stringify({ ok: false, error: "taskId required" })
-            const t = store.get(args.taskId)
-            if (!t) return JSON.stringify({ ok: false, error: `No task ${args.taskId}` })
-            if (!args.all && t.sessionID !== currentSID) {
-              return JSON.stringify({
-                ok: false,
-                error: `Task belongs to another session. Pass all=true to override.`,
-              })
-            }
+            const t = getOwn(args.taskId)
+            if (!t)
+              return JSON.stringify({ ok: false, error: `No task ${args.taskId} in this session` })
             if (args.delayMs !== undefined && t.mode !== "adaptive") {
               return JSON.stringify({
                 ok: false,
@@ -257,14 +236,9 @@ export async function buildLoopTools(
             if (!v.ok) {
               return JSON.stringify({ ok: false, error: v.error })
             }
-            const t = store.get(args.taskId)
-            if (!t) return JSON.stringify({ ok: false, error: `No task ${args.taskId}` })
-            if (!args.all && t.sessionID !== currentSID) {
-              return JSON.stringify({
-                ok: false,
-                error: `Task belongs to another session. Pass all=true to override.`,
-              })
-            }
+            const t = getOwn(args.taskId)
+            if (!t)
+              return JSON.stringify({ ok: false, error: `No task ${args.taskId} in this session` })
             if (t.mode !== "adaptive") {
               return JSON.stringify({
                 ok: false,
@@ -308,15 +282,13 @@ export async function buildLoopTools(
 
     loop_status: tool({
       description:
-        "Show /loop task status. Defaults to current session; pass all=true to see all sessions.",
-      args: {
-        all: z.boolean().optional().describe("Show tasks from all sessions"),
-      },
-      async execute(args, ctx) {
-        const tasks = args.all ? store.list() : store.listBySession(ctx.sessionID)
+        "Show /loop task status for the current session.",
+      args: {},
+      async execute(_args, ctx) {
+        const tasks = store.listBySession(ctx.sessionID)
         const summary = {
           ok: true,
-          scope: args.all ? "all" : ctx.sessionID,
+          scope: ctx.sessionID,
           activeTasks: tasks.filter((t) => !t.paused).length,
           pausedTasks: tasks.filter((t) => t.paused).length,
           tasks: tasks.map((t) => ({
