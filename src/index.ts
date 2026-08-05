@@ -217,7 +217,7 @@ export const LoopPlugin: Plugin = async (ctx) => {
       // outer quotes before matching, mirroring handleUserCommand.
       for (const part of output?.parts ?? []) {
         if (part.type !== "text" || part.synthetic || part.ignored) continue
-        const match = /^\/loop(?:\s+([\s\S]*))?$/.exec(stripOuterQuotes(part.text))
+        const match = /^\/(?:loop|proactive)(?:\s+([\s\S]*))?$/.exec(stripOuterQuotes(part.text))
         if (!match) continue
         await runLoopCommand(match[1] ?? "", input.sessionID, output.parts)
         return
@@ -225,7 +225,8 @@ export const LoopPlugin: Plugin = async (ctx) => {
     },
 
     "command.execute.before": async (input, output) => {
-      if (input.command !== "loop") return
+      // /proactive is a full alias of /loop (Claude Code parity).
+      if (input.command !== "loop" && input.command !== "proactive") return
       await runLoopCommand(input.arguments || "", input.sessionID, output.parts)
     },
   }

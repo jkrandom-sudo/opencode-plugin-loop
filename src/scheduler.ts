@@ -11,12 +11,13 @@
  */
 
 import { existsSync, readFileSync } from "node:fs"
+import { homedir } from "node:os"
 import { join } from "node:path"
 import type { LoopTask } from "./types.js"
 import type { LoopStoreInstance as LoopStore } from "./store.js"
 import type { CronParserInstance as CronParser } from "./cron-parser.js"
 import type { JitterInstance as Jitter } from "./jitter.js"
-import { buildFixedExecutionPrompt, buildLoopCreatedPrompt, errorMessage, type LoopLogger } from "./runtime-feedback.js"
+import { buildFixedExecutionPrompt, buildFixedFirstRunPrompt, buildLoopCreatedPrompt, errorMessage, type LoopLogger } from "./runtime-feedback.js"
 import {
   buildAdaptiveExecutionPrompt,
   clampAdaptiveNextDueAt as clampAdaptivePolicyNextDueAt,
@@ -136,9 +137,10 @@ export const LOOP_HELP = `/loop — run prompts on a schedule
 
 Usage:
   /loop <prompt>                    Adaptive: runs now, the model picks the next check (fallback 1m–1h)
-  /loop <interval> <prompt>         Fixed interval: 30s, 5m, 2h, 1d (min 1s)
-  /loop                             Maintenance mode (uses .opencode/loop.md when present)
+  /loop <interval> <prompt>         Fixed interval: 30s, 5m, 2h, 1d (min 1s); runs immediately, then repeats
+  /loop                             Maintenance mode (uses .opencode/loop.md or ~/.opencode/loop.md when present)
   /loop help                        Show this help
+  /proactive ...                    Full alias of /loop
 
 Subcommands (tasks are bound to the session that created them):
   list | status                     Show this session's loop tasks
@@ -264,15 +266,34 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
           source: "user",
           sessionID,
         })
+        if (task.once) {
+          // One-shot: make it due immediately — the ticker fires it within
+          // one tick and auto-cancels after the first successful fire.
+          await inst.opts.store.reschedule(task.id, Date.now())
+          return {
+            task,
+            modelPrompt: buildLoopCreatedPrompt({
+              prompt: flags.prompt,
+              schedule: `every ${interval.display}`,
+              taskId: task.id,
+              once: task.once,
+            }),
+            message: `🔁 Loop started: every ${interval.display}, prompt "${flags.prompt.slice(0, 50)}${flags.prompt.length > 50 ? "..." : ""}" [id=${task.id}] [s=${sessionID.slice(0, 8)}] (runs once). Cancel: \`/loop cancel ${task.id}\``,
+          }
+        }
+        // Recurring fixed tasks run immediately on creation (Claude Code
+        // behavior): execute in this turn, then repeat on schedule. The next
+        // fire is anchored to now, keeping wall-clock semantics.
+        await inst.rearmFixed(task)
+        await inst.opts.store.markFired(task.id, task.nextDueAt)
         return {
           task,
-          modelPrompt: buildLoopCreatedPrompt({
+          modelPrompt: buildFixedFirstRunPrompt({
             prompt: flags.prompt,
             schedule: `every ${interval.display}`,
             taskId: task.id,
-            once: task.once,
           }),
-          message: `🔁 Loop started: every ${interval.display}, prompt "${flags.prompt.slice(0, 50)}${flags.prompt.length > 50 ? "..." : ""}" [id=${task.id}] [s=${sessionID.slice(0, 8)}]${task.once ? " (runs once)" : ""}. Cancel: \`/loop cancel ${task.id}\``,
+          message: `🔁 Loop started: every ${interval.display} (running now), prompt "${flags.prompt.slice(0, 50)}${flags.prompt.length > 50 ? "..." : ""}" [id=${task.id}] [s=${sessionID.slice(0, 8)}]. Cancel: \`/loop cancel ${task.id}\``,
         }
       }
 
@@ -386,9 +407,12 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
     },
 
     loadDefaultPrompt(directory) {
+      // Priority: project > user > built-in default (mirrors Claude Code's
+      // project `.claude/loop.md` vs user `~/.claude/loop.md`).
       const candidates = [
         join(directory, ".opencode", "loop.md"),
         join(directory, "loop.md"),
+        join(homedir(), ".opencode", "loop.md"),
       ]
       for (const p of candidates) {
         if (existsSync(p)) {

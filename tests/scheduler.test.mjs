@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { LoopStore } from "../dist/store.js"
@@ -753,5 +753,65 @@ test("/loop stop --all: the extra token is treated as an id and not found", asyn
     assert.equal(store.list().length, 2, "nothing cancelled")
   } finally {
     rmSync(dir, { recursive: true })
+  }
+})
+
+// --- 0.8.0: fixed tasks run immediately on creation (Claude Code parity) ---
+
+test("recurring fixed task executes in the creation turn and is re-armed from now", async () => {
+  const { sched, store, dir } = makeScheduler(undefined, () => 0.5)
+  try {
+    const before = Date.now()
+    const r = await sched.handleUserCommand("5m check the build", "/tmp", "s1")
+    const after = Date.now()
+    assert.match(r.modelPrompt, /first execution/, "creation turn IS the first execution")
+    assert.match(r.modelPrompt, /check the build/)
+    assert.match(r.modelPrompt, /every 5m/)
+    const t = store.get(r.task.id)
+    assert.ok(t.lastFiredAt >= before && t.lastFiredAt <= after, "first run recorded")
+    // 5m is the medium jitter tier (±5%) — next fire is anchored to creation
+    // time within the jitter window.
+    assert.ok(t.nextDueAt >= before + 285_000, "next fire anchored to creation time")
+    assert.ok(t.nextDueAt <= after + 315_000, "within the jitter window")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("one-shot fixed task is due immediately instead of running in the creation turn", async () => {
+  const { sched, store, dir } = makeScheduler()
+  try {
+    const r = await sched.handleUserCommand("30s --once remind me", "/tmp", "s1")
+    assert.equal(r.task.once, true)
+    assert.ok(r.task.nextDueAt <= Date.now(), "due now — ticker fires it within one tick")
+    assert.match(r.modelPrompt, /successfully created/, "creation confirmation, not execution")
+    assert.equal(store.get(r.task.id).lastFiredAt, 0, "no execution recorded yet")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+// --- 0.8.0: user-level ~/.opencode/loop.md ---
+
+test("bare /loop falls back to the user-level loop.md, project file wins", async () => {
+  const { sched, dir } = makeScheduler()
+  const fakeHome = mkdtempSync(join(tmpdir(), "loop-home-"))
+  const project = mkdtempSync(join(tmpdir(), "loop-proj-"))
+  const realHome = process.env.HOME
+  try {
+    mkdirSync(join(fakeHome, ".opencode"), { recursive: true })
+    writeFileSync(join(fakeHome, ".opencode", "loop.md"), "user-level maintenance")
+    process.env.HOME = fakeHome
+
+    assert.equal(sched.loadDefaultPrompt(project), "user-level maintenance")
+
+    mkdirSync(join(project, ".opencode"), { recursive: true })
+    writeFileSync(join(project, ".opencode", "loop.md"), "project-level maintenance")
+    assert.equal(sched.loadDefaultPrompt(project), "project-level maintenance")
+  } finally {
+    process.env.HOME = realHome
+    rmSync(dir, { recursive: true })
+    rmSync(fakeHome, { recursive: true, force: true })
+    rmSync(project, { recursive: true, force: true })
   }
 })

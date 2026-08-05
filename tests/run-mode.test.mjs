@@ -283,3 +283,17 @@ test("run mode: /loop in a later text part is still found (continue, not return)
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test("run mode: '/proactive ...' is intercepted as a /loop alias", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-run-"))
+  try {
+    const hooks = await makeHooks(dir)
+    const out = textMessage("/proactive 1m ping via alias")
+    await hooks["chat.message"]({ sessionID: "sRun" }, out)
+    assert.equal(out.parts[0].synthetic, true)
+    assert.equal(taskCount(dir), 1, "alias creates the task")
+    await hooks.dispose()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

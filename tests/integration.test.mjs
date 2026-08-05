@@ -91,6 +91,10 @@ test("end-to-end: /loop 1m ping in sessionA → persists → fires only when act
     const data = JSON.parse(readFileSync(tasksFile, "utf-8"))
     assert.equal(data.tasks.length, 1)
     assert.equal(data.tasks[0].sessionID, "sA")
+    // Fixed tasks run immediately on creation, so lastFiredAt is already set;
+    // the assertion below checks the TICKER does not fire it again.
+    const firedAtCreation = data.tasks[0].lastFiredAt
+    assert.ok(firedAtCreation > 0, "first execution recorded at creation")
     data.tasks[0].nextDueAt = Date.now() - 1000
     writeFileSync(tasksFile, JSON.stringify(data), "utf-8")
 
@@ -104,7 +108,7 @@ test("end-to-end: /loop 1m ping in sessionA → persists → fires only when act
     // To verify isolation, we trust the unit tests in per-session.test.mjs.
     // Here we just verify the data state.
     const dataAfter = JSON.parse(readFileSync(tasksFile, "utf-8"))
-    assert.equal(dataAfter.tasks[0].lastFiredAt, 0, "task in A did not fire while active is B")
+    assert.equal(dataAfter.tasks[0].lastFiredAt, firedAtCreation, "task in A did not fire again while active is B")
 
     await hooks.dispose()
   } finally {
@@ -412,10 +416,13 @@ test("starting a loop stays silent on the TUI", async () => {
     )
 
     assert.equal(toastCalls.length, 0)
-    assert.match(output.parts[0].text, /Job ID: [a-z0-9]+/i)
+    // Fixed tasks run immediately on creation: the prompt is the first-run
+    // execution instruction (schedule confirmation + task body).
+    assert.match(output.parts[0].text, /task [a-z0-9]+ has just been scheduled/i)
     assert.match(output.parts[0].text, /every 5m/)
-    assert.match(output.parts[0].text, /same language/i)
-    assert.match(output.parts[0].text, /do not call tools/i)
+    assert.match(output.parts[0].text, /first execution/i)
+    assert.match(output.parts[0].text, /check the build/)
+    assert.match(output.parts[0].text, /user's language/i)
   } finally {
     if (hooks) await hooks.dispose()
     rmSync(dir, { recursive: true })
@@ -695,6 +702,38 @@ test("loop_schedule create: fixed interval validation matches the slash parser",
 
     await hooks.dispose()
   } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("/proactive command is handled exactly like /loop", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-int-"))
+  let hooks
+  try {
+    const mockClient = { app: { async log() { return true } } }
+    hooks = await pluginModule.LoopPlugin({
+      client: mockClient,
+      project: { id: "test" },
+      directory: dir,
+      worktree: dir,
+      $: {},
+      serverUrl: new URL("http://localhost:3000"),
+      experimental_workspace: { register: () => {} },
+    })
+    const output = {
+      parts: [{ id: "p1", sessionID: "sA", messageID: "m1", type: "text", text: "1m via alias" }],
+    }
+    await hooks["command.execute.before"](
+      { command: "proactive", arguments: "1m via alias", sessionID: "sA" },
+      output
+    )
+    assert.equal(output.parts[0].synthetic, true)
+    assert.match(output.parts[0].text, /first execution/i)
+    const tasks = JSON.parse(readFileSync(join(dir, ".opencode/cache/loop/tasks.json"), "utf-8"))
+    assert.equal(tasks.tasks.length, 1)
+    assert.equal(tasks.tasks[0].prompt, "via alias")
+  } finally {
+    if (hooks) await hooks.dispose()
     rmSync(dir, { recursive: true })
   }
 })
