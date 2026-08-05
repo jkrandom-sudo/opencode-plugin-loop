@@ -6,8 +6,8 @@ const packageJson = JSON.parse(
   await readFile(new URL("../package.json", import.meta.url), "utf8"),
 )
 
-test("publishes the 0.7.4 release", () => {
-  assert.equal(packageJson.version, "0.7.4")
+test("publishes the 0.8.0 release", () => {
+  assert.equal(packageJson.version, "0.8.0")
 })
 
 test("publishes explicit server and TUI plugin entrypoints", () => {
@@ -42,4 +42,11 @@ test("ships no dialog runtime dependencies", () => {
 
 test("test command always builds fresh output before running tests", () => {
   assert.match(packageJson.scripts.test, /^npm run build && /)
+})
+
+test("bundles loop and proactive command definitions", () => {
+  assert.deepEqual(packageJson.opencode.commands, [
+    "commands/loop.md",
+    "commands/proactive.md",
+  ])
 })

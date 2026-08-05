@@ -1132,7 +1132,8 @@ test("plugin: full session-scoped fire cycle via ticker", async () => {
     // Verify task data is still in expected state
     const dataAfter = JSON.parse(readFileSync(tasksFile, "utf-8"))
     assert.equal(dataAfter.tasks[0].sessionID, SID_A)
-    assert.equal(dataAfter.tasks[0].lastFiredAt, 0, "not yet fired")
+    assert.ok(dataAfter.tasks[0].lastFiredAt > 0, "fixed tasks run immediately on creation")
+    assert.equal(dataAfter.tasks[0].lastFiredAt, data.tasks[0].lastFiredAt, "ticker has not fired it again")
 
     await hooks.dispose()
   } finally {

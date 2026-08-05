@@ -55,6 +55,23 @@ export function buildFixedExecutionPrompt(task: {
   ].join("\n")
 }
 
+/**
+ * First execution of a freshly created fixed task: the task runs immediately
+ * in the current turn (Claude Code behavior), then repeats on schedule.
+ */
+export function buildFixedFirstRunPrompt(input: {
+  prompt: string
+  schedule: string
+  taskId: string
+}): string {
+  return [
+    `The /loop task ${input.taskId} has just been scheduled to run ${input.schedule}. This is its first execution — it runs now, then repeats on schedule (cancel anytime with: /loop cancel ${input.taskId}).`,
+    "Briefly confirm the schedule in the user's language, then perform the task described below now and report the result concisely.",
+    "",
+    input.prompt,
+  ].join("\n")
+}
+
 export type LoopLogLevel = "debug" | "info" | "warn" | "error"
 export type LoopLogger = (
   level: LoopLogLevel,

@@ -9,10 +9,11 @@ A drop-in `/loop` command for [opencode](https://opencode.ai), modeled after Cla
 
 ## Features
 
-- **`/loop 5m <prompt>`** — fixed interval (s/m/h/d supported)
+- **`/loop 5m <prompt>`** — fixed interval (s/m/h/d supported), runs immediately on creation, then repeats on schedule
 - **`/loop <prompt>`** — runs immediately in Adaptive mode, then keeps the random fallback, reschedules from the result, or converts a clear recurring cadence to Fixed
-- **`/loop`** — bare: read `.opencode/loop.md` or run built-in maintenance, immediately
+- **`/loop`** — bare: read `.opencode/loop.md` (project) or `~/.opencode/loop.md` (user), or run built-in maintenance, immediately
 - **`/loop 30s --once <prompt>`** — one-shot: fires once, then auto-cancels
+- **`/proactive`** — full alias of `/loop` (Claude Code parity)
 - **`/loop help`** — full usage, flags, and examples in the terminal
 - **Claude Code-style flags** — `--cancel/--list/--status/--pause/--resume/--stop/--stop-all` map to the matching subcommand
 - **Per-session scoping** — tasks are bound to a `sessionID`; other sessions never see, fire, or manage them
@@ -118,6 +119,11 @@ Re-run `npm run build` after editing `src/`, then restart OpenCode to load the r
 /loop 30s --once remind me to stretch   # one-shot: fires once, then auto-cancels
 ```
 
+A recurring fixed task **runs immediately on creation** (Claude Code behavior):
+the creation turn is its first execution, then it repeats on schedule with the
+next fire anchored to the creation time. A `--once` task instead becomes due
+immediately and fires within one ticker period, then auto-cancels.
+
 Fixed tasks use deterministic Jitter by default. Add
 `--jitter=false` for an exact interval or `--jitter=true` to enable it explicitly.
 Flags are only recognized **before the prompt begins**: anything after the first
@@ -149,7 +155,7 @@ Adaptive-to-Fixed conversion defaults to `jitterEnabled: false`, so an explicit 
 The fallback is written before the prompt is injected. A successful `reschedule` therefore replaces the fallback and is not overwritten after the model finishes. The preferred `delayMs` is relative to tool-call time, avoiding epoch arithmetic. An in-range model delay is stored exactly without Jitter; only an out-of-range request is clamped to the task's configured minimum or maximum delay. Fixed and Maintenance rescheduling remains unchanged. An absolute `nextDueAtMs` is also accepted, but passing it together with `delayMs` returns an error without changing the task.
 
 ### Bare `/loop` — custom default prompt
-Create `.opencode/loop.md` (project) or `<user>/.opencode/loop.md` (user) with your maintenance instructions:
+Create `.opencode/loop.md` (project) or `~/.opencode/loop.md` (user-level, used when the project has none) with your maintenance instructions:
 ```markdown
 Check the release branch PR. If CI is red, pull the failing log,
 diagnose, and push a minimal fix. If new review comments have arrived,
@@ -178,8 +184,9 @@ Trying to manage a task owned by another session reports "No task `<id>` in this
 
 | Claude Code `/loop` | opencode-plugin-loop |
 |---|---|
-| `/loop 5m <prompt>` | identical |
+| `/loop 5m <prompt>` | identical — runs immediately on creation, then repeats |
 | `/loop <prompt>` (self-paced) | Adaptive: runs now, model picks the next check (fallback 1m–1h) |
+| `/proactive` | alias: `/proactive` works exactly like `/loop` |
 | cancel/list via cron tools | `/loop cancel <id>`, `/loop list` |
 | `--cancel`, `--list`, `--stop` | accepted — mapped to `cancel`, `list`, `stop` |
 | one-off reminder ("in 30m tell me X") | `/loop 30s --once <prompt>` |
