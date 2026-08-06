@@ -73,6 +73,8 @@ interface LoopStoreInstance {
   getDueTasksForSession(sessionID: string, now?: number): Promise<LoopTask[]>
   getOrphanedTasks(): LoopTask[]
   markFired(id: string, nextDueAt?: number): Promise<LoopTask | null>
+  /** Persist in-place mutations made by the caller (e.g. lastContentHash). */
+  touch(id: string): Promise<LoopTask | null>
   reschedule(id: string, nextDueAt: number): Promise<LoopTask | null>
   setFixed(
     id: string,
@@ -300,6 +302,8 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
         // Only present on one-shot tasks — keeps persisted JSON stable for
         // tasks that never use the field.
         ...(input.once ? { once: true as const } : {}),
+        ...(input.loopFilePath ? { loopFilePath: input.loopFilePath } : {}),
+        ...(input.lastContentHash ? { lastContentHash: input.lastContentHash } : {}),
         ownerPid: identity.pid,
         ownerStartedAt: identity.startedAt,
       }
@@ -361,6 +365,13 @@ export function LoopStore(this: unknown, options?: LoopStoreOptions): LoopStoreI
       } else if (task.mode === "maintenance" && task.adaptiveMaxMs) {
         task.nextDueAt = task.lastFiredAt + task.adaptiveMaxMs
       }
+      dirtyIds.add(id)
+      await inst.persist()
+      return task
+    },
+    touch: async (id) => {
+      const task = inst.get(id)
+      if (!task) return null
       dirtyIds.add(id)
       await inst.persist()
       return task

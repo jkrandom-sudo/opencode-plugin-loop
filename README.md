@@ -117,7 +117,14 @@ Re-run `npm run build` after editing `src/`, then restart OpenCode to load the r
 /loop 2h look for failing CI runs
 /loop 2m --jitter=false check the latest package version
 /loop 30s --once remind me to stretch   # one-shot: fires once, then auto-cancels
+/loop check the deploy every 20m        # trailing "every" clause ≡ /loop 20m check the deploy
+/loop check CI every 5 minutes          # word units work too: seconds/minutes/hours/days
 ```
+
+A trailing `every <interval>` clause is extracted deterministically (Claude
+Code rule 2): the interval applies and the rest is the prompt. `check every PR`
+— no time expression after "every" — is not treated as a schedule and stays
+Adaptive.
 
 A recurring fixed task **runs immediately on creation** (Claude Code behavior):
 the creation turn is its first execution, then it repeats on schedule with the
@@ -162,6 +169,11 @@ diagnose, and push a minimal fix. If new review comments have arrived,
 address each one. If everything is green, say so in one line.
 ```
 
+The file is **re-read on every run** (Claude Code behavior): editing loop.md
+takes effect on the next fire with the full new content; when the content is
+unchanged, only a short reminder is injected (prompt-cache friendly); if the
+file is deleted, that run is skipped and the task stays armed.
+
 ### Subcommands
 
 All subcommands are **scoped to the current session** — tasks created in other sessions are invisible to them, exactly like Claude Code's per-session `/loop` jobs.
@@ -185,6 +197,7 @@ Trying to manage a task owned by another session reports "No task `<id>` in this
 | Claude Code `/loop` | opencode-plugin-loop |
 |---|---|
 | `/loop 5m <prompt>` | identical — runs immediately on creation, then repeats |
+| trailing "every" clause (`... every 20m`) | identical — deterministically extracted as a fixed interval |
 | `/loop <prompt>` (self-paced) | Adaptive: runs now, model picks the next check (fallback 1m–1h) |
 | `/proactive` | alias: `/proactive` works exactly like `/loop` |
 | cancel/list via cron tools | `/loop cancel <id>`, `/loop list` |

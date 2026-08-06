@@ -17,7 +17,7 @@ import type { LoopTask } from "./types.js"
 import type { LoopStoreInstance as LoopStore } from "./store.js"
 import type { CronParserInstance as CronParser } from "./cron-parser.js"
 import type { JitterInstance as Jitter } from "./jitter.js"
-import { buildFixedExecutionPrompt, buildFixedFirstRunPrompt, buildLoopCreatedPrompt, errorMessage, type LoopLogger } from "./runtime-feedback.js"
+import { buildFixedExecutionPrompt, buildFixedFirstRunPrompt, buildLoopCreatedPrompt, buildMaintenanceExecutionPrompt, errorMessage, hashContent, type LoopLogger } from "./runtime-feedback.js"
 import {
   buildAdaptiveExecutionPrompt,
   clampAdaptiveNextDueAt as clampAdaptivePolicyNextDueAt,
@@ -53,6 +53,7 @@ interface SchedulerInstance {
   handleResume(id: string): Promise<CommandParseResult>
   formatTaskList(tasks: LoopTask[]): string
   loadDefaultPrompt(directory: string): string
+  loadDefaultPromptSource(directory: string): { path: string | null; content: string }
   getDueTasks(now?: number): Promise<LoopTask[]>
   getDueTasksForSession(sessionID: string, now?: number): Promise<LoopTask[]>
   nextDueAt(task: LoopTask, now?: number): Promise<number>
@@ -138,7 +139,8 @@ export const LOOP_HELP = `/loop — run prompts on a schedule
 Usage:
   /loop <prompt>                    Adaptive: runs now, the model picks the next check (fallback 1m–1h)
   /loop <interval> <prompt>         Fixed interval: 30s, 5m, 2h, 1d (min 1s); runs immediately, then repeats
-  /loop                             Maintenance mode (uses .opencode/loop.md or ~/.opencode/loop.md when present)
+  /loop <prompt> every <interval>   Same as above (e.g. "check the deploy every 20m", "every 5 minutes")
+  /loop                             Maintenance mode (loop.md is re-read on every run — edits apply next fire)
   /loop help                        Show this help
   /proactive ...                    Full alias of /loop
 
@@ -229,7 +231,8 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
       }
 
       if (!trimmed) {
-        const prompt = inst.loadDefaultPrompt(directory)
+        const source = inst.loadDefaultPromptSource(directory)
+        const prompt = source.content
         const task = await inst.opts.store.create({
           prompt,
           mode: "maintenance",
@@ -237,6 +240,11 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
           directory,
           source: "default",
           sessionID,
+          // File-backed maintenance re-reads loop.md on every fire, so edits
+          // take effect on the next trigger (Claude Code behavior).
+          ...(source.path
+            ? { loopFilePath: source.path, lastContentHash: hashContent(prompt) }
+            : {}),
         })
         // Run the maintenance prompt immediately in this turn (matching
         // Adaptive's run-now behavior), then re-arm on the slow cycle.
@@ -406,9 +414,10 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
       return lines.join("\n")
     },
 
-    loadDefaultPrompt(directory) {
-      // Priority: project > user > built-in default (mirrors Claude Code's
-      // project `.claude/loop.md` vs user `~/.claude/loop.md`).
+    /** Resolve the maintenance prompt AND its backing file (when any).
+     * Priority: project > user > built-in default (mirrors Claude Code's
+     * project `.claude/loop.md` vs user `~/.claude/loop.md`). */
+    loadDefaultPromptSource(directory) {
       const candidates = [
         join(directory, ".opencode", "loop.md"),
         join(directory, "loop.md"),
@@ -418,13 +427,17 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
         if (existsSync(p)) {
           try {
             const content = readFileSync(p, "utf-8").trim()
-            if (content) return content
+            if (content) return { path: p, content }
           } catch {
             // ignore
           }
         }
       }
-      return DEFAULT_MAINTENANCE_PROMPT
+      return { path: null, content: DEFAULT_MAINTENANCE_PROMPT }
+    },
+
+    loadDefaultPrompt(directory) {
+      return inst.loadDefaultPromptSource(directory).content
     },
 
     async getDueTasks(now: number = Date.now()) {
@@ -483,13 +496,44 @@ export function Scheduler(this: unknown, opts: SchedulerOptions): SchedulerInsta
       inst.inflight.add(task.id)
       try {
         const sessionID = task.sessionID
-        const text =
-          task.mode === "adaptive"
-            ? buildAdaptiveExecutionPrompt(task, {
-                minMs: inst.opts.adaptiveMinMs,
-                maxMs: inst.opts.adaptiveMaxMs,
-              })
-            : buildFixedExecutionPrompt(task)
+        let text: string
+        if (task.mode === "adaptive") {
+          text = buildAdaptiveExecutionPrompt(task, {
+            minMs: inst.opts.adaptiveMinMs,
+            maxMs: inst.opts.adaptiveMaxMs,
+          })
+        } else if (task.mode === "maintenance" && task.loopFilePath) {
+          // File-backed maintenance re-reads loop.md at fire time (Claude
+          // Code behavior): edited file → inject the full new content;
+          // unchanged → short cache-friendly reminder; deleted → no-op tick.
+          let content: string | null = null
+          try {
+            if (existsSync(task.loopFilePath)) {
+              content = readFileSync(task.loopFilePath, "utf-8").trim() || null
+            }
+          } catch {
+            content = null
+          }
+          if (content === null) {
+            await logger("info", "loop.md missing or empty; skipping maintenance tick", {
+              taskId: task.id,
+              path: task.loopFilePath,
+            })
+            await inst.opts.store.logFire(task, false)
+            return false
+          }
+          const hash = hashContent(content)
+          if (hash === task.lastContentHash) {
+            text = buildMaintenanceExecutionPrompt(task, null)
+          } else {
+            text = buildMaintenanceExecutionPrompt(task, content)
+            task.lastContentHash = hash
+            task.prompt = content
+            await inst.opts.store.touch(task.id)
+          }
+        } else {
+          text = buildFixedExecutionPrompt(task)
+        }
         const directory = task.directory || ctx?.directory || process.cwd()
         const client = ctx?.client
 

@@ -39,6 +39,12 @@ export interface LoopTask {
   ownerPid?: number
   /** Owner process start time (epoch ms), guards against pid reuse. */
   ownerStartedAt?: number
+  /** Maintenance tasks only: the loop.md file this task re-reads on every
+   *  fire. When absent, the task fires its stored prompt snapshot. */
+  loopFilePath?: string
+  /** Hash of the loop.md content last injected — unchanged content fires a
+   *  short cache-friendly reminder instead of the full text. */
+  lastContentHash?: string
 }
 
 export interface LoopConfig {
@@ -89,6 +95,10 @@ export interface CreateTaskInput {
   sessionID: string
   /** One-shot task (fixed mode only): auto-cancel after the first successful fire. */
   once?: boolean
+  /** Maintenance tasks only: re-read this loop.md file on every fire. */
+  loopFilePath?: string
+  /** Hash of the loop.md content captured at creation. */
+  lastContentHash?: string
 }
 
 export interface FireResult {

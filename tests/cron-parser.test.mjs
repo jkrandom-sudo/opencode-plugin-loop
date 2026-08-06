@@ -67,3 +67,45 @@ test("format ms back to readable", () => {
   assert.equal(p.format(7_200_000), "2h")
   assert.equal(p.format(86_400_000), "1d")
 })
+// --- trailing "every" clause extraction (Claude Code rule 2) ---
+
+test("extractInterval: trailing every clause becomes a fixed interval", async () => {
+  const cron = new CronParser()
+  const cases = [
+    ["check the deploy every 20m", 20 * 60_000, "check the deploy"],
+    ["check the deploy every 30s", 30_000, "check the deploy"],
+    ["check CI every 5 minutes", 5 * 60_000, "check CI"],
+    ["look for failures every 2 hours", 2 * 3_600_000, "look for failures"],
+    ["daily report every 1 day", 86_400_000, "daily report"],
+    ["ping every 1.5h", 5_400_000, "ping"],
+    ["CHECK EVERY 10M", 600_000, "CHECK"],
+  ]
+  for (const [input, ms, rest] of cases) {
+    const r = cron.extractInterval(input)
+    assert.ok(r.interval, `expected interval for: ${input}`)
+    assert.equal(r.interval.ms, ms, input)
+    assert.equal(r.rest, rest, input)
+  }
+})
+
+test("extractInterval: trailing every without a time expression does not match", async () => {
+  const cron = new CronParser()
+  for (const input of ["check every PR", "review every merge request", "every 20m ago check"]) {
+    const r = cron.extractInterval(input)
+    assert.equal(r.interval, null, input)
+  }
+  // every in the middle is prompt text, not a schedule
+  const mid = cron.extractInterval("check every 2m worth of logs")
+  assert.equal(mid.interval, null)
+  // empty prompt before the clause: interval extracted, rest empty
+  const bare = cron.extractInterval("every 5m")
+  assert.equal(bare.interval.ms, 300_000)
+  assert.equal(bare.rest, "")
+})
+
+test("extractInterval: leading token wins over a trailing every clause", async () => {
+  const cron = new CronParser()
+  const r = cron.extractInterval("5m check the deploy every 2m")
+  assert.equal(r.interval.ms, 300_000)
+  assert.equal(r.rest, "check the deploy every 2m", "trailing clause stays in the prompt verbatim")
+})

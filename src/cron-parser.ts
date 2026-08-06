@@ -25,6 +25,14 @@ const UNIT_TO_MS: Record<string, number> = {
 }
 const MIN_INTERVAL_MS = 1_000
 
+/** Word units accepted in trailing "every" clauses, mapped to s/m/h/d. */
+const EVERY_UNIT: Record<string, string> = {
+  s: "s", sec: "s", secs: "s", second: "s", seconds: "s",
+  m: "m", min: "m", mins: "m", minute: "m", minutes: "m",
+  h: "h", hr: "h", hrs: "h", hour: "h", hours: "h",
+  d: "d", day: "d", days: "d",
+}
+
 /**
  * Single validator shared by the slash parser, the LLM tool `create`, and
  * `set_fixed` — all entries must accept/reject the same fixed intervals.
@@ -80,7 +88,10 @@ export function CronParser(this: unknown): CronParserInstance {
 
     /** Try to extract an interval from a user command like "5m check deploy".
      * `rest` is the ORIGINAL substring after the interval token (not a token
-     * re-join), so prompt whitespace and newlines are preserved verbatim. */
+     * re-join), so prompt whitespace and newlines are preserved verbatim.
+     * When the first token is not an interval, a trailing "every" clause is
+     * extracted instead (Claude Code rule 2): "check deploy every 20m" →
+     * fixed 20m + "check deploy". "check every PR" does not match. */
     extractInterval(text: string) {
       const trimmed = text.trim()
       if (!trimmed) return { interval: null, rest: text }
@@ -91,6 +102,17 @@ export function CronParser(this: unknown): CronParserInstance {
         return {
           interval: parsed,
           rest: trimmed.slice(first.length).replace(/^\s+/, ""),
+        }
+      }
+      const every = /\bevery\s+(\d+(?:\.\d+)?)\s*([smhd]|seconds?|minutes?|hours?|days?)\s*$/i.exec(trimmed)
+      if (every) {
+        const unit = EVERY_UNIT[every[2].toLowerCase()]
+        const parsedTail = unit ? inst.parse(`${every[1]}${unit}`) : null
+        if (parsedTail) {
+          return {
+            interval: parsedTail,
+            rest: trimmed.slice(0, every.index).trim(),
+          }
         }
       }
       return { interval: null, rest: text }

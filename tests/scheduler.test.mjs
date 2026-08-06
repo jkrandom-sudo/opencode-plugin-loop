@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { LoopStore } from "../dist/store.js"
@@ -813,5 +813,116 @@ test("bare /loop falls back to the user-level loop.md, project file wins", async
     rmSync(dir, { recursive: true })
     rmSync(fakeHome, { recursive: true, force: true })
     rmSync(project, { recursive: true, force: true })
+  }
+})
+
+// --- 0.8.1: trailing "every" clause creates a fixed task ---
+
+test("/loop check deploy every 2m → fixed, runs now (first-run prompt)", async () => {
+  const { sched, store, dir } = makeScheduler()
+  try {
+    const r = await sched.handleUserCommand("check deploy every 2m", "/tmp", "s1")
+    assert.equal(r.task.mode, "fixed")
+    assert.equal(r.task.intervalMs, 120_000)
+    assert.equal(r.task.prompt, "check deploy")
+    assert.match(r.modelPrompt, /first execution/)
+    assert.ok(store.get(r.task.id).lastFiredAt > 0)
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("/loop --once check every 30s → one-shot fixed due immediately", async () => {
+  const { sched, dir } = makeScheduler()
+  try {
+    const r = await sched.handleUserCommand("--once check every 30s", "/tmp", "s1")
+    assert.equal(r.task.mode, "fixed")
+    assert.equal(r.task.once, true)
+    assert.equal(r.task.intervalMs, 30_000)
+    assert.equal(r.task.prompt, "check")
+    assert.ok(r.task.nextDueAt <= Date.now())
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+test("/loop check every PR stays adaptive (no time expression)", async () => {
+  const { sched, dir } = makeScheduler()
+  try {
+    const r = await sched.handleUserCommand("check every PR", "/tmp", "s1")
+    assert.equal(r.task.mode, "adaptive")
+    assert.equal(r.task.prompt, "check every PR")
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+})
+
+// --- 0.8.1: file-backed maintenance re-reads loop.md on every fire ---
+
+test("maintenance fire re-reads loop.md: unchanged → reminder, edited → full text, deleted → no-op", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loop-sched-"))
+  const project = mkdtempSync(join(tmpdir(), "loop-proj-"))
+  try {
+    const store = new LoopStore({ storageDir: dir })
+    const sched = new Scheduler({
+      store,
+      cron: new CronParser(),
+      jitter: new Jitter(0.1),
+      adaptiveMinMs: 60_000,
+      adaptiveMaxMs: 3_600_000,
+    })
+    const loopFile = join(project, ".opencode", "loop.md")
+    mkdirSync(join(project, ".opencode"), { recursive: true })
+    writeFileSync(loopFile, "maintenance v1")
+
+    const r = await sched.handleUserCommand("", project, "s1")
+    assert.equal(r.task.mode, "maintenance")
+    assert.equal(r.task.loopFilePath, loopFile)
+    assert.ok(r.task.lastContentHash, "content hash recorded at creation")
+
+    const promptCalls = []
+    const ctx = { client: { session: { async prompt(a) { promptCalls.push(a); return true } } }, directory: project }
+
+    // Unchanged content → short reminder, no full text
+    await sched.fireTask(store.get(r.task.id), ctx)
+    assert.match(promptCalls[0].body.parts[0].text, /unchanged/)
+    assert.ok(!promptCalls[0].body.parts[0].text.includes("maintenance v1"))
+
+    // Edited content → full text injected, hash updated and persisted
+    writeFileSync(loopFile, "maintenance v2 changed")
+    await sched.fireTask(store.get(r.task.id), ctx)
+    assert.match(promptCalls[1].body.parts[0].text, /maintenance v2 changed/)
+    const persisted = store.get(r.task.id)
+    assert.equal(persisted.prompt, "maintenance v2 changed")
+    const disk = JSON.parse(readFileSync(join(dir, "tasks.json"), "utf-8"))
+    assert.equal(disk.tasks[0].prompt, "maintenance v2 changed", "hash/content persisted")
+
+    // Deleted file → no-op tick (no injection)
+    rmSync(loopFile)
+    const fired = await sched.fireTask(store.get(r.task.id), ctx)
+    assert.equal(fired, false)
+    assert.equal(promptCalls.length, 2, "no new injection after file deletion")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(project, { recursive: true, force: true })
+  }
+})
+
+test("snapshot maintenance tasks (no loopFilePath) keep firing the stored prompt", async () => {
+  const { sched, store, dir } = makeScheduler()
+  try {
+    const t = await store.create({
+      prompt: "legacy snapshot",
+      mode: "maintenance",
+      adaptiveMaxMs: 3_600_000,
+      directory: "/tmp",
+      sessionID: "s1",
+    })
+    const promptCalls = []
+    const ctx = { client: { session: { async prompt(a) { promptCalls.push(a); return true } } }, directory: "/tmp" }
+    await sched.fireTask(store.get(t.id), ctx)
+    assert.match(promptCalls[0].body.parts[0].text, /legacy snapshot/)
+  } finally {
+    rmSync(dir, { recursive: true })
   }
 })
