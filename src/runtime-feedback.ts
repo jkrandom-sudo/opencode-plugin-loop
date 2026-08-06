@@ -1,5 +1,6 @@
 import type { PluginInput } from "@opencode-ai/plugin"
 import type { Part } from "@opencode-ai/sdk"
+import { createHash } from "node:crypto"
 
 const SERVICE = "opencode-plugin-loop"
 const HANDLED_COMMAND_PROMPT =
@@ -69,6 +70,34 @@ export function buildFixedFirstRunPrompt(input: {
     "Briefly confirm the schedule in the user's language, then perform the task described below now and report the result concisely.",
     "",
     input.prompt,
+  ].join("\n")
+}
+
+/** Stable short content hash for loop.md change detection. */
+export function hashContent(content: string): string {
+  return createHash("sha256").update(content, "utf-8").digest("hex").slice(0, 16)
+}
+
+/**
+ * Maintenance execution for file-backed tasks (loop.md is re-read on every
+ * fire, Claude Code style): fresh/changed content is injected in full;
+ * unchanged content gets a short cache-friendly reminder.
+ */
+export function buildMaintenanceExecutionPrompt(
+  task: { id: string },
+  freshContent: string | null
+): string {
+  if (freshContent === null) {
+    return [
+      `This is the scheduled execution of /loop maintenance task ${task.id}. The maintenance instructions from loop.md are unchanged since the previous run earlier in this conversation — refer to them above.`,
+      "If there is pending maintenance work, perform it now and report concisely. If nothing is pending, reply with one line saying so and call loop_schedule(action=\"cancel\", taskId=\"" + task.id + "\") to end the loop.",
+    ].join("\n")
+  }
+  return [
+    `This is the scheduled execution of /loop maintenance task ${task.id}. The maintenance instructions from loop.md (re-read at fire time; they may have been edited since the last run) follow below — perform them now, then report concisely.`,
+    `When the work is complete and no further checks are needed, call loop_schedule(action="cancel", taskId="${task.id}") to end the loop.`,
+    "",
+    freshContent,
   ].join("\n")
 }
 
