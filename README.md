@@ -1,5 +1,7 @@
 # opencode-plugin-loop
 
+**[English](README.md) | [简体中文](README.zh-CN.md)**
+
 [![npm version](https://img.shields.io/npm/v/opencode-plugin-loop.svg)](https://www.npmjs.com/package/opencode-plugin-loop)
 [![npm downloads](https://img.shields.io/npm/dm/opencode-plugin-loop.svg)](https://www.npmjs.com/package/opencode-plugin-loop)
 [![CI](https://github.com/jkrandom-sudo/opencode-plugin-loop/actions/workflows/ci.yml/badge.svg)](https://github.com/jkrandom-sudo/opencode-plugin-loop/actions/workflows/ci.yml)
