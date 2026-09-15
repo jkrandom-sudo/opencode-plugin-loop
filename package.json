@@ -65,7 +65,7 @@
     "@opencode-ai/plugin": ">=1.17.18"
   },
   "devDependencies": {
-    "@babel/core": "^7.28.0",
+    "@babel/core": "^8.0.5",
     "@babel/preset-typescript": "^7.27.1",
     "@opencode-ai/plugin": "^1.17.18",
     "@types/node": "^22.0.0",
