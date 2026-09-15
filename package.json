@@ -68,7 +68,7 @@
     "@babel/core": "^7.28.0",
     "@babel/preset-typescript": "^7.27.1",
     "@opencode-ai/plugin": "^1.17.18",
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.5.1",
     "typescript": "^5.4.0"
   },
   "opencode": {
